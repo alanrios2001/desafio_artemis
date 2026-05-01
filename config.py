@@ -1,4 +1,4 @@
-from dynaconf import Dynaconf
+from dynaconf import Dynaconf  # type: ignore[attr-defined]
 from pathlib import Path
 
 settings = Dynaconf(

@@ -1,5 +1,5 @@
 [project]
-name = "scratchpythonproject"
+name = "desafio_artemis"
 version = "0.1.0"
 description = ""
 authors = [
@@ -8,6 +8,7 @@ authors = [
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
+    "dynaconf (>=3.2.13,<4.0.0)"
 ]
 
 [tool.poetry.group.dev.dependencies]
