@@ -26,7 +26,17 @@ jobs:
         uses: ./.github/actions/setup-python-poetry
 
       - name: Run tests
-        run: poetry run pytest tests
+        shell: bash
+        run: |
+          poetry run pytest tests
+          exit_code=$?
+
+          if [ "$exit_code" -eq 5 ]; then
+            echo "No tests were collected. Skipping test step."
+            exit 0
+          fi
+
+          exit "$exit_code"
 
   python-code-lint:
     name: Python Code Lint
