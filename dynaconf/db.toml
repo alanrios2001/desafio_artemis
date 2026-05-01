@@ -1,0 +1,5 @@
+[database]
+DATABASE = "datasets"
+HOST = "localhost"
+PORT = 3306
+USERNAME = "ai_datasets"
