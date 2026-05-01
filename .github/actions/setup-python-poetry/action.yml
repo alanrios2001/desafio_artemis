@@ -1,0 +1,27 @@
+name: Setup Python and Poetry
+description: Setup Python 3.11, Poetry and project dependencies
+
+runs:
+  using: "composite"
+  steps:
+    - name: Setup Python
+      uses: actions/setup-python@v6
+      with:
+        python-version: "3.11"
+        cache: "poetry"
+
+    - name: Install Poetry
+      shell: bash
+      run: pip install poetry
+
+    - name: Configure Poetry
+      shell: bash
+      run: poetry config virtualenvs.in-project true
+
+    - name: Upgrade pip
+      shell: bash
+      run: poetry run python -m pip install --upgrade pip
+
+    - name: Install dependencies
+      shell: bash
+      run: poetry install

@@ -1,0 +1,62 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - main
+      - master
+      - develop
+
+  pull_request:
+    branches:
+      - main
+      - master
+      - develop
+
+jobs:
+  unit-tests:
+    name: Unit Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-python-poetry
+
+      - name: Run tests
+        run: poetry run pytest tests
+
+  python-code-lint:
+    name: Python Code Lint
+    runs-on: ubuntu-latest
+    continue-on-error: true
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-python-poetry
+
+      - name: Run flake8
+        run: poetry run flake8 .
+
+      - name: Check formatting with black
+        run: poetry run black --check .
+
+  static-type-check:
+    name: Static Type Check
+    runs-on: ubuntu-latest
+    continue-on-error: true
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+
+      - name: Setup environment
+        uses: ./.github/actions/setup-python-poetry
+
+      - name: Run mypy
+        run: poetry run mypy . --ignore-missing-imports --install-types --non-interactive
