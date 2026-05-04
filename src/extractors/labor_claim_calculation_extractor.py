@@ -1,4 +1,5 @@
 import re
+import html
 import fitz
 import pymupdf.layout
 import unicodedata
@@ -35,6 +36,8 @@ class LaborClaimInfo(TypedDict, total=False):
 class LaborClaimCalculationExtractor:
     def __init__(self) -> None:
         self.separator_re = re.compile(r"^\|\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?$")
+        # patterns para extração de cada campo, novos casos podem ser adicionados aqui para melhorar a cobertura,
+        # buscando variações comuns de labels encontrados nos PDFs
         self.field_pattern_map = {
             "total_devido_pelo_reclamado": (
                 r"(?:TOTAL\s+DEVIDO(?:\s+PELO)?\s+RECLAMAD[OA]"
@@ -66,10 +69,61 @@ class LaborClaimCalculationExtractor:
             ),
         }
 
-    def _all_fields_extracted(self, labor_claim_info: LaborClaimInfo) -> bool:
-        return all(
-            field_name in labor_claim_info for field_name in self.field_pattern_map
+    def _normalize_html_text(self, html_text: str) -> str:
+        """
+        Normaliza HTML da página para regex:
+        - decodifica entidades (ex.: &#xc7; -> Ç)
+        - remove tags
+        - remove acentos (ASCII fold)
+        - colapsa espaços
+        :param html_text: O texto HTML bruto extraído da página.
+        :return: O texto normalizado
+        """
+        decoded_html = html.unescape(html_text or "")
+        no_tags = re.sub(r"<[^>]+>", " ", decoded_html)
+        normalized = self._normalize_text(no_tags)
+        return re.sub(r"\s+", " ", normalized).strip()
+
+    @staticmethod
+    def _normalize_text(text: str) -> str:
+        """
+        Métod0 auxiliar para normalizar texto, removendo acentos e caracteres especiais, e colapsando espaços.
+         Pode ser usado tanto para o texto extraído da página quanto para as células das tabelas,
+         para facilitar a comparação e extração de informações.
+        :param text: O texto a ser normalizado
+        :return: O texto normalizado, sem acentos, caracteres especiais, e com espaços colapsados.
+        """
+        return (
+            unicodedata.normalize("NFKD", text)
+            .encode("ascii", "ignore")
+            .decode("ascii")
+            .replace("\u00a0", " ")
         )
+
+    def _get_pending_patterns_and_matches(
+        self, labor_claim_info: LaborClaimInfo, text: str
+    ) -> tuple[list[tuple[str, str]], list[str]]:
+        """
+        Similar a _get_pending_patterns, mas também verifica se os padrões pendentes aparecem no texto da página.
+         Isso pode ajudar a decidir mais rapidamente se vale a pena tentar extrair tabelas daquela página.
+        :param labor_claim_info: O dicionário atual de informações extraídas, usado para determinar quais
+         campos ainda estão pendentes.
+        :param text: O texto da página atual, usado para verificar a presença dos padrões pendentes.
+        :return: Uma lista de tuplas (field_name, pattern) para os campos que ainda estão pendentes
+         e cujos padrões aparecem no texto.
+        """
+        pending_patterns = [
+            (field, pattern)
+            for field, pattern in self.field_pattern_map.items()
+            if field not in labor_claim_info
+        ]
+
+        matched_fields = [
+            field
+            for field, pattern in pending_patterns
+            if re.search(pattern, text, re.IGNORECASE)
+        ]
+        return pending_patterns, matched_fields
 
     def extract(self, pdf_path: str | Path) -> LaborClaimInfo:
         """
@@ -95,25 +149,32 @@ class LaborClaimCalculationExtractor:
         with fitz.open(pdf_path) as document:
             for page_index, page in enumerate(document, start=1):
                 text = page.get_text("html", sort=True)
-                if not text.strip():
+                normalized_text = self._normalize_html_text(text)
+
+                if not normalized_text:
                     logger.debug(
                         f"[LaborClaimCalculationExtractor][extract] Página {page_index} sem texto extraído. "
                         "Pulando para a próxima página."
                     )
                     continue
 
-                # melhora eficiência verificando labels pendentes antes de extrair tabelas
-                pending_patterns = [
-                    pattern
-                    for field, pattern in self.field_pattern_map.items()
-                    if field not in labor_claim_info
-                ]
+                # melhora eficiência verificando labels pendentes antes de extrair tabelas, e das pendentes
+                # quais aparecem no texto da página, para decidir se vale a pena tentar extrair tabelas daquela página
+                pending_patterns, pattern_matches = (
+                    self._get_pending_patterns_and_matches(
+                        labor_claim_info, normalized_text
+                    )
+                )
+
+                if not pending_patterns:
+                    logger.info(
+                        "[LaborClaimCalculationExtractor][extract] Todos os campos obrigatórios já foram extraídos. "
+                        f"Interrompendo na página {page_index}."
+                    )
+                    break
 
                 # verifica se algum dos padrões pendentes aparece no texto da página antes de tentar extrair tabelas
-                if pending_patterns and not any(
-                    re.search(pattern, text, re.IGNORECASE)
-                    for pattern in pending_patterns
-                ):
+                if not pattern_matches:
                     logger.debug(
                         f"[LaborClaimCalculationExtractor][extract] Página {page_index} não contém labels pendentes. "
                         "Pulando para a próxima página."
@@ -122,36 +183,38 @@ class LaborClaimCalculationExtractor:
 
                 # extrai tabelas e tenta extrair campos de interesse
                 page_tables = [table.to_markdown() for table in page.find_tables()]
-                self.try_extracting_fields(page_tables, labor_claim_info)
-
-                if self._all_fields_extracted(labor_claim_info):
-                    logger.info(
-                        "[LaborClaimCalculationExtractor][extract] Todos os campos obrigatórios foram extraídos. "
-                        f"Interrompendo na página {page_index}."
-                    )
-                    break
+                self.try_extracting_fields(
+                    page_tables, labor_claim_info, pattern_matches
+                )
 
         return labor_claim_info
 
     def try_extracting_fields(
-        self, page_tables: list[str], labor_claim_info: LaborClaimInfo
+        self,
+        page_tables: list[str],
+        labor_claim_info: LaborClaimInfo,
+        matched_fields: list[str],
     ) -> LaborClaimInfo:
         """
         Tenta extrair os campos de interesse a partir das tabelas de uma página.
         """
+        found_fields = []
         for table in page_tables:
             # caso todos os campos já tenham sido extraídos, não precisa continuar tentando nas tabelas restantes
-            if self._all_fields_extracted(labor_claim_info):
+            if not matched_fields:
                 break
-            for field_name in self.field_pattern_map:
+            for field_name in matched_fields:
                 if labor_claim_info.get(field_name, None):
                     continue
                 extracted = self.extract_field_value(
-                    self._normalize_table_text(table), field_name
+                    self._normalize_text(table), field_name
                 )
                 if extracted:  # evita sobrescrever com None
                     labor_claim_info[field_name] = extracted
-
+                    found_fields.append(field_name)
+            for field in found_fields:
+                matched_fields.remove(field)
+            found_fields = []
         return labor_claim_info
 
     @staticmethod
@@ -183,15 +246,6 @@ class LaborClaimCalculationExtractor:
             )
             return None
 
-    @staticmethod
-    def _normalize_table_text(table: str) -> str:
-        return (
-            unicodedata.normalize("NFKD", table)
-            .encode("ascii", "ignore")
-            .decode("ascii")
-            .replace("\u00a0", " ")
-        )
-
     def _extract_line_cells(self, raw_line: str) -> list[str]:
         """
         Extrai as células de uma linha de tabela em formato Markdown, removendo tags HTML e normalizando espaços.
@@ -210,6 +264,11 @@ class LaborClaimCalculationExtractor:
         return [re.sub(r"\s+", " ", c).strip() for c in cells]
 
     def _extract_honorarios_demonstrativo_total(self, table: str) -> Decimal | None:
+        """
+        Extração específica para o caso dos honorários advocatícios no demonstrativo de cálculos
+        :param table: O texto da tabela, com quebras de linha e espaços limpos.
+        :return: O valor total dos honorários advocatícios, ou None se não for encontrado.
+        """
         if "DEMONSTRATIVO DE HONORARIOS" not in table.upper():
             return None
 
@@ -265,6 +324,8 @@ class LaborClaimCalculationExtractor:
     def extract_field_value(self, table: str, field_name: str) -> Decimal | None:
         """
         Extrai o valor de um campo específico a partir das tabelas extraídas do PDF, usando um padrão de label.
+        :param table: O texto da tabela, com quebras de linha e espaços limpos.
+        :param field_name: O nome do campo a ser extraído, que deve corresponder a uma chave no field_pattern_map.
         """
         if field_name == "liquido_devido_ao_advogado":
             honorarios_total = self._extract_honorarios_demonstrativo_total(table)
@@ -308,7 +369,7 @@ if __name__ == "__main__":
 
     extractor = LaborClaimCalculationExtractor()
 
-    # result = extractor.extract(data_path / "0011084-61.2016.5.15.0109.pdf")
+    result = extractor.extract(data_path / "0000086-08.2024.5.07.0002.pdf")
 
     ignore = [
         "0000380-42.2023.5.05.0005.pdf",
