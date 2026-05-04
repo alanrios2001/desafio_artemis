@@ -172,8 +172,7 @@ class LaborClaimCalculationExtractor:
                 if not pending_patterns:
                     logger.info(
                         f"[LaborClaimCalculationExtractor][extract] PDF:{pdf_name}\n\t"
-                        f"Todos os campos já foram extraídos. "
-                        f"Interrompendo na página {page_index}."
+                        f"Extração concluída, interrompi na página {page_index}."
                     )
                     break
 
@@ -191,10 +190,14 @@ class LaborClaimCalculationExtractor:
                 self.try_extracting_fields(
                     page_tables, labor_claim_info, pattern_matches
                 )
-            logger.info(
-                "[LaborClaimCalculationExtractor][extract] PDF:{pdf_name}\n\tExtração concluída,"
-                " iterei todas as páginas do PDF."
-            )
+            if pending_patterns:
+                for pattern, _ in pending_patterns:
+                    labor_claim_info[pattern] = Decimal(0)
+                logger.warning(
+                    f"[LaborClaimCalculationExtractor][extract] PDF:{pdf_name}\n\t"
+                    f"Extração concluída, mas os seguintes campos não foram encontrados: "
+                    f"{', '.join(field for field, _ in pending_patterns)}"
+                )
 
         return labor_claim_info
 
@@ -218,7 +221,7 @@ class LaborClaimCalculationExtractor:
                 extracted = self.extract_field_value(
                     self._normalize_text(table), field_name
                 )
-                if extracted:  # evita sobrescrever com None
+                if extracted or extracted == Decimal(0):  # evita sobrescrever com None
                     labor_claim_info[field_name] = extracted
                     found_fields.append(field_name)
             for field in found_fields:
