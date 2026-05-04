@@ -274,7 +274,20 @@ class LaborClaimCalculationExtractor:
                     return self._to_decimal(raw_value)
                 break
 
-        # Fallback: caso com separador <br>. Label e valor na mesma celula ou próximas, sem estrutura de tabela clara.
+        return self.extract_field_values_broken_table(normalized_table, field_pattern)
+
+    def extract_field_values_broken_table(
+        self, normalized_table: str, field_pattern: str
+    ) -> Decimal | None:
+        """
+        Fallback para casos onde a estrutura de tabela é quebrada, com labels e valores misturados ou sem
+         separação clara.
+        Tenta encontrar o label em qualquer parte do texto e extrair o valor monetário mais próximo que
+         apareça depois dele.
+        :param normalized_table: O texto da tabela já normalizado, com quebras de linha e espaços limpos.
+        :param field_pattern: Pattern para encontrar label
+        :return: valor decimal
+        """
         flat_text = re.sub(r"<br\s*/?>", "\n", normalized_table, flags=re.IGNORECASE)
         flat_text = flat_text.replace("|", "\n")
         flat_text = re.sub(r"\*\*", " ", flat_text)
