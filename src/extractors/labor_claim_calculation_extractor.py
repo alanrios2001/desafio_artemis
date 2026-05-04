@@ -132,19 +132,21 @@ class LaborClaimCalculationExtractor:
         :param pdf_path: Caminho para o arquivo PDF a ser processado.
         :return:
         """
-
+        pdf_path = Path(pdf_path)
+        pdf_name = pdf_path.name
         logger.info(
-            f"[LaborClaimCalculationExtractor][extract] Iniciando extração de informações do PDF: {pdf_path.name}"
+            f"[LaborClaimCalculationExtractor][extract] PDF:{pdf_name}\n\tIniciando extração de informações."
         )
 
-        pdf_path = Path(pdf_path)
         if not pdf_path.exists():
-            raise FileNotFoundError(f"PDF não encontrado: {pdf_path}")
+            logger.error(f" PDF:{pdf_name} arquivo não encontrado")
+            raise FileNotFoundError(f" PDF:{pdf_name} arquivo não encontrado")
 
         labor_claim_info: LaborClaimInfo = {}
 
         logger.info(
-            "[LaborClaimCalculationExtractor][extract] Extraindo tabelas do PDF usando PyMuPDF..."
+            f"[LaborClaimCalculationExtractor][extract] PDF:{pdf_name}\n\tPercorrendo paginas em busca"
+            " dos campos de interesse."
         )
         with fitz.open(pdf_path) as document:
             for page_index, page in enumerate(document, start=1):
@@ -153,7 +155,8 @@ class LaborClaimCalculationExtractor:
 
                 if not normalized_text:
                     logger.debug(
-                        f"[LaborClaimCalculationExtractor][extract] Página {page_index} sem texto extraído. "
+                        f"[LaborClaimCalculationExtractor][extract] PDF:{pdf_name}\n\t"
+                        f"Página {page_index} do sem texto extraído. "
                         "Pulando para a próxima página."
                     )
                     continue
@@ -168,7 +171,8 @@ class LaborClaimCalculationExtractor:
 
                 if not pending_patterns:
                     logger.info(
-                        "[LaborClaimCalculationExtractor][extract] Todos os campos obrigatórios já foram extraídos. "
+                        f"[LaborClaimCalculationExtractor][extract] PDF:{pdf_name}\n\t"
+                        f"Todos os campos já foram extraídos. "
                         f"Interrompendo na página {page_index}."
                     )
                     break
@@ -176,7 +180,8 @@ class LaborClaimCalculationExtractor:
                 # verifica se algum dos padrões pendentes aparece no texto da página antes de tentar extrair tabelas
                 if not pattern_matches:
                     logger.debug(
-                        f"[LaborClaimCalculationExtractor][extract] Página {page_index} não contém labels pendentes. "
+                        f"[LaborClaimCalculationExtractor][extract] PDF:{pdf_name}\n\t"
+                        f"Página {page_index} não contém labels pendentes. "
                         "Pulando para a próxima página."
                     )
                     continue
@@ -186,6 +191,10 @@ class LaborClaimCalculationExtractor:
                 self.try_extracting_fields(
                     page_tables, labor_claim_info, pattern_matches
                 )
+            logger.info(
+                "[LaborClaimCalculationExtractor][extract] PDF:{pdf_name}\n\tExtração concluída,"
+                " iterei todas as páginas do PDF."
+            )
 
         return labor_claim_info
 
@@ -369,7 +378,8 @@ if __name__ == "__main__":
 
     extractor = LaborClaimCalculationExtractor()
 
-    result = extractor.extract(data_path / "0000086-08.2024.5.07.0002.pdf")
+    result = extractor.extract(data_path / "0000337-81.2023.5.17.0002.pdf")
+    print(result)
 
     ignore = [
         "0000380-42.2023.5.05.0005.pdf",
