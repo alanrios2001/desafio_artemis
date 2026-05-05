@@ -1,14 +1,14 @@
 import re
-import html
 import fitz
 import pymupdf.layout
-import unicodedata
 
 from decimal import Decimal
 from pathlib import Path
 from typing import TypedDict
 
+from utils.cast_utils import to_decimal
 from utils.general_utils import get_logger
+from utils.text_utils import normalize_text, normalize_html_text
 
 logger = get_logger(__name__)
 
@@ -58,8 +58,8 @@ class LaborClaimCalculationExtractor:
                 r"|HONORARIOS\s+LIQUIDOS?\s+PARA(?:\s+.+)?)"
             ),
             "valor_de_irrf": (
-                r"(?:IRPF\s+DEVIDO\s+PELO\s+RECLAMANTE"
-                r"|IRRF\s+DEVIDO\s+PELO\s+RECLAMANTE"
+                r"(?:IRRF\s+DEVIDO\s+PELO\s+RECLAMANTE"
+                r"|IRRF\s+SOBRE\s+HONORARIOS(?:\s+PARA(?:\s+.+)?)?"
                 r"|IMPOSTO\s+DE\s+RENDA)"
             ),
             "valor_do_fgts": (
@@ -68,71 +68,6 @@ class LaborClaimCalculationExtractor:
                 r"|TOTAL\s+DO\s+FGTS)"
             ),
         }
-
-    def _normalize_html_text(self, html_text: str) -> str:
-        """
-        Normaliza HTML da página para regex:
-        - decodifica entidades (ex.: &#xc7; -> Ç)
-        - converte quebras/fechamentos de blocos HTML em linhas
-        - remove tags restantes
-        - remove acentos (ASCII fold)
-        - junta linhas por " | " para preservar separação sem perder legibilidade
-        :param html_text: O texto HTML bruto extraído da página.
-        :return: O texto normalizado
-        """
-        decoded_html = html.unescape(html_text or "")
-        with_line_breaks = re.sub(r"(?i)<br\s*/?>", "\n", decoded_html)
-        with_line_breaks = re.sub(
-            r"(?i)</(?:p|div|tr|li|h[1-6]|td|th)>", "\n", with_line_breaks
-        )
-
-        no_tags = re.sub(r"<[^>]+>", " ", with_line_breaks)
-        normalized = self._normalize_text(no_tags)
-
-        lines = [re.sub(r"\s+", " ", line).strip() for line in normalized.splitlines()]
-        lines = [line for line in lines if line]
-        return " | ".join(lines)
-
-    @staticmethod
-    def _normalize_text(text: str) -> str:
-        """
-        Métod0 auxiliar para normalizar texto, removendo acentos e caracteres especiais, e colapsando espaços.
-         Pode ser usado tanto para o texto extraído da página quanto para as células das tabelas,
-         para facilitar a comparação e extração de informações.
-        :param text: O texto a ser normalizado
-        :return: O texto normalizado, sem acentos, caracteres especiais, e com espaços colapsados.
-        """
-        return (
-            unicodedata.normalize("NFKD", text)
-            .encode("ascii", "ignore")
-            .decode("ascii")
-            .replace("\u00a0", " ")
-        )
-
-    def _get_pending_patterns_and_matches(
-        self, labor_claim_info: LaborClaimInfo, text: str
-    ) -> tuple[list[tuple[str, str]], list[str]]:
-        """
-        Similar a _get_pending_patterns, mas também verifica se os padrões pendentes aparecem no texto da página.
-         Isso pode ajudar a decidir mais rapidamente se vale a pena tentar extrair tabelas daquela página.
-        :param labor_claim_info: O dicionário atual de informações extraídas, usado para determinar quais
-         campos ainda estão pendentes.
-        :param text: O texto da página atual, usado para verificar a presença dos padrões pendentes.
-        :return: Uma lista de tuplas (field_name, pattern) para os campos que ainda estão pendentes
-         e cujos padrões aparecem no texto.
-        """
-        pending_patterns = [
-            (field, pattern)
-            for field, pattern in self.field_pattern_map.items()
-            if field not in labor_claim_info
-        ]
-
-        matched_fields = [
-            field
-            for field, pattern in pending_patterns
-            if re.search(pattern, text, re.IGNORECASE)
-        ]
-        return pending_patterns, matched_fields
 
     def extract(self, pdf_path: str | Path) -> LaborClaimInfo:
         """
@@ -160,15 +95,7 @@ class LaborClaimCalculationExtractor:
         with fitz.open(pdf_path) as document:
             for page_index, page in enumerate(document, start=1):
                 text = page.get_text("xhtml", sort=True)
-                normalized_text = self._normalize_html_text(text)
-
-                if "Debito Total da Reclamada" in normalized_text:
-                    page_tables = [table.to_markdown() for table in page.find_tables()]
-                    print(page_tables)
-
-                if "Honorarios Advocaticios Devidos pela Reclamada" in normalized_text:
-                    page_tables = [table.to_markdown() for table in page.find_tables()]
-                    print(page_tables)
+                normalized_text = normalize_html_text(text)
 
                 if not normalized_text:
                     logger.debug(
@@ -202,21 +129,59 @@ class LaborClaimCalculationExtractor:
                     )
                     continue
 
-                # extrai tabelas e tenta extrair campos de interesse
-                page_tables = [table.to_markdown() for table in page.find_tables()]
-                self.extract_fields(page_tables, labor_claim_info, pattern_matches)
+                # tenta extrair primeiro pelo texto HTML/XHTML limpo da página
+                self._extract_fields_from_text(
+                    normalized_text, labor_claim_info, pattern_matches
+                )
+
+                # recalcula os campos ainda pendentes na página atual
+                _, remaining_pattern_matches = self._get_pending_patterns_and_matches(
+                    labor_claim_info, normalized_text
+                )
+
+                # usa tabelas apenas como fallback para o que ainda não foi encontrado
+                if remaining_pattern_matches:
+                    page_tables = [table.to_markdown() for table in page.find_tables()]
+                    self._extract_fields_from_tables(
+                        page_tables, labor_claim_info, remaining_pattern_matches
+                    )
             if pending_patterns:
                 for pattern, _ in pending_patterns:
                     labor_claim_info[pattern] = Decimal(0)
                 logger.warning(
                     f"[LaborClaimCalculationExtractor][extract] PDF:{pdf_name}\n\t"
-                    f"Extração concluída, mas os seguintes campos não foram encontrados: "
-                    f"{', '.join(field for field, _ in pending_patterns)}"
+                    "Extração concluída, mas os seguintes campos não foram encontrados: "
+                    f"{', '.join([field for field, _ in pending_patterns])}."
                 )
 
         return labor_claim_info
 
-    def extract_fields(
+    def _get_pending_patterns_and_matches(
+        self, labor_claim_info: LaborClaimInfo, text: str
+    ) -> tuple[list[tuple[str, str]], list[str]]:
+        """
+        Similar a _get_pending_patterns, mas também verifica se os padrões pendentes aparecem no texto da página.
+         Isso pode ajudar a decidir mais rapidamente se vale a pena tentar extrair tabelas daquela página.
+        :param labor_claim_info: O dicionário atual de informações extraídas, usado para determinar quais
+         campos ainda estão pendentes.
+        :param text: O texto da página atual, usado para verificar a presença dos padrões pendentes.
+        :return: Uma lista de tuplas (field_name, pattern) para os campos que ainda estão pendentes
+         e cujos padrões aparecem no texto.
+        """
+        pending_patterns = [
+            (field, pattern)
+            for field, pattern in self.field_pattern_map.items()
+            if field not in labor_claim_info
+        ]
+
+        matched_fields = [
+            field
+            for field, pattern in pending_patterns
+            if re.search(pattern, text, re.IGNORECASE)
+        ]
+        return pending_patterns, matched_fields
+
+    def _extract_fields_from_tables(
         self,
         page_tables: list[str],
         labor_claim_info: LaborClaimInfo,
@@ -224,6 +189,10 @@ class LaborClaimCalculationExtractor:
     ) -> LaborClaimInfo:
         """
         Tenta extrair os campos de interesse a partir das tabelas de uma página.
+        :param page_tables: Lista de tabelas extraídas da página, em formato Markdown.
+        :param labor_claim_info: Dicionário atual de informações extraídas, usado para evitar
+        :param matched_fields: Lista de campos que existem na pagina.
+        :return: Dicionário atualizado com os campos extraídos das tabelas.
         """
         found_fields = []
         for table in page_tables:
@@ -231,12 +200,12 @@ class LaborClaimCalculationExtractor:
             if not matched_fields:
                 break
             for field_name in matched_fields:
-                if labor_claim_info.get(field_name, None):
+                if field_name in labor_claim_info:
                     continue
-                extracted = self.extract_field_value(
-                    self._normalize_text(table), field_name
+                extracted = self._extract_field_value_from_table(
+                    normalize_text(table), field_name
                 )
-                if extracted or extracted == Decimal(0):  # evita sobrescrever com None
+                if extracted is not None:  # None explicito evita falsy como Decimal(0)
                     labor_claim_info[field_name] = extracted
                     found_fields.append(field_name)
             for field in found_fields:
@@ -244,51 +213,54 @@ class LaborClaimCalculationExtractor:
             found_fields = []
         return labor_claim_info
 
-    @staticmethod
-    def _to_decimal(raw_value: str) -> Decimal | None:
+    def _extract_field_value_from_table(
+        self, table: str, field_name: str
+    ) -> Decimal | None:
         """
-        Converte uma string de valor monetário em um Decimal,
-         lidando com formatos comuns e valores negativos entre parênteses.
-        :param raw_value: A string bruta contendo o valor monetário, possivelmente com símbolos, espaços e formatação.
-        :return: Um Decimal representando o valor monetário, ou None se a conversão falhar.
-         Exemplo de formatos aceitos: "R$ 1.234,56", "(R$ 1.234,56)", "1234,56", "(1234,56)",
-         "R$1.234,56", "1.234,56", "(1.234,56)"
+        Extrai o valor de um campo específico a partir das tabelas extraídas do PDF, usando um padrão de label.
+        :param table: O texto da tabela, com quebras de linha e espaços limpos.
+        :param field_name: O nome do campo a ser extraído, que deve corresponder a uma chave no field_pattern_map.
         """
+        if field_name == "liquido_devido_ao_advogado":
+            honorarios_total = self._extract_honorarios_demonstrativo_total(table)
+            if honorarios_total is not None:
+                return honorarios_total
 
-        # Remove o que não é dígito, vírgula ou parênteses, e trata o valor como negativo se estiver entre parênteses
-        cleaned = re.sub(r"[^\d,()]", "", raw_value).strip()
-        if not cleaned:
-            return None
-        # Verifica se o valor é negativo (entre parênteses) e prepara a string para conversão removendo os parênteses
-        is_negative = cleaned.startswith("(") and cleaned.endswith(")")
-        # Remove os parênteses, pontos de milhar e substitui a vírgula decimal por ponto para o formato Decimal
-        numeric = cleaned.strip("()").replace(".", "").replace(",", ".")
-        try:
-            value = Decimal(numeric)
-            return -value if is_negative else value
-        except Exception as e:
-            logger.error(
-                "[LaborClaimCalculationExtractor][_to_decimal] "
-                f"Erro ao converter valor para Decimal: {e}"
-            )
+        if field_name == "valor_do_fgts":
+            extracted_fgts = self._extract_fgts_field_value(table)
+            if extracted_fgts is not None:
+                return extracted_fgts
+
+        field_pattern = self.field_pattern_map.get(field_name)
+        if not field_pattern:
             return None
 
-    def _extract_line_cells(self, raw_line: str) -> list[str]:
-        """
-        Extrai as células de uma linha de tabela em formato Markdown, removendo tags HTML e normalizando espaços.
-        :param raw_line: A linha bruta da tabela em formato Markdown, que pode conter tags HTML e formatação.
-         Exemplo de linha: "| **TOTAL DEVIDO PELO RECLAMADO** | R$ 1.234,56 |"
-        :return: Uma lista de strings representando as células da linha, com tags HTML removidas e espaços normalizados.
-         Exemplo de retorno: ["TOTAL DEVIDO PELO RECLAMADO", "R$ 1.234,56"]
-         Observação: Se a linha não for uma linha de tabela válida (não começar com "|" ou for uma linha de separação),
-         retorna uma lista vazia.
-        """
-        line = raw_line.strip()
-        if not line.startswith("|") or self.separator_re.match(line):
-            return []
+        label_re = re.compile(
+            rf"^\*{{0,2}}\s*{field_pattern}\s*\*{{0,2}}\s*$", re.IGNORECASE
+        )
+        money_re = re.compile(
+            rf"^\*{{0,2}}\s*({MONEY_RE})\s*\*{{0,2}}\s*$", re.IGNORECASE
+        )
 
-        cells = [re.sub(r"<[^>]+>", " ", c).strip() for c in line.strip("|").split("|")]
-        return [re.sub(r"\s+", " ", c).strip() for c in cells]
+        for raw_line in table.splitlines():
+            cells = self._extract_line_cells(raw_line)
+            if not cells:
+                continue
+            for idx, cell in enumerate(cells):
+                if not label_re.match(cell):
+                    continue
+
+                for candidate in cells[idx + 1 :]:
+                    m = money_re.match(candidate) or re.search(
+                        MONEY_RE, candidate, re.IGNORECASE
+                    )
+                    if not m:
+                        continue
+                    raw_value = m.group(1) if m.lastindex else m.group(0)
+                    return to_decimal(raw_value)
+                break
+
+        return self._extract_money_on_same_line_as_label(table, field_pattern)
 
     def _extract_honorarios_demonstrativo_total(self, table: str) -> Decimal | None:
         """
@@ -322,73 +294,149 @@ class LaborClaimCalculationExtractor:
                         return None
         return None
 
-    def extract_field_values_broken_table(
-        self, table: str, field_pattern: str
-    ) -> Decimal | None:
+    def _extract_line_cells(self, raw_line: str) -> list[str]:
         """
-        Fallback para casos onde a estrutura de tabela é quebrada, com labels e valores misturados ou sem
-         separação clara.
-        Tenta encontrar o label em qualquer parte do texto e extrair o valor monetário mais próximo que
-         apareça depois dele.
-        :param table: O texto da tabela, com quebras de linha e espaços limpos.
-        :param field_pattern: Pattern para encontrar label
-        :return: valor decimal
+        Extrai as células de uma linha de tabela em formato Markdown, removendo tags HTML e normalizando espaços.
+        :param raw_line: A linha bruta da tabela em formato Markdown, que pode conter tags HTML e formatação.
+         Exemplo de linha: "| **TOTAL DEVIDO PELO RECLAMADO** | R$ 1.234,56 |"
+        :return: Uma lista de strings representando as células da linha, com tags HTML removidas e espaços normalizados.
+         Exemplo de retorno: ["TOTAL DEVIDO PELO RECLAMADO", "R$ 1.234,56"]
+         Observação: Se a linha não for uma linha de tabela válida (não começar com "|" ou for uma linha de separação),
+         retorna uma lista vazia.
         """
-        flat_text = re.sub(r"<br\s*/?>", "\n", table, flags=re.IGNORECASE)
-        flat_text = flat_text.replace("|", "\n")
-        flat_text = re.sub(r"\*\*", " ", flat_text)
-        flat_text = re.sub(r"[ \t]+", " ", flat_text)
+        line = raw_line.strip()
+        if not line.startswith("|") or self.separator_re.match(line):
+            return []
 
-        label_anywhere_re = re.compile(field_pattern, re.IGNORECASE)
-        for lm in label_anywhere_re.finditer(flat_text):
-            window = flat_text[lm.end() : lm.end() + 250]
-            vm = re.search(MONEY_RE, window, re.IGNORECASE)
-            if vm:
-                return self._to_decimal(vm.group(0))
+        cells = [re.sub(r"<[^>]+>", " ", c).strip() for c in line.strip("|").split("|")]
+        return [re.sub(r"\s+", " ", c).strip() for c in cells]
+
+    @staticmethod
+    def _extract_fgts_field_value(text: str) -> Decimal | None:
+        """
+        Extrai o valor final de FGTS, priorizando a linha cujo label seja exatamente 'FGTS'.
+
+        Evita capturar valores intermediários como 'FGTS 8%', que normalmente representam
+        uma verba específica do demonstrativo, não o total consolidado do campo solicitado.
+
+        :param text: Texto normalizado da página ou tabela.
+        :return: Valor de FGTS convertido para Decimal, ou None se não for encontrado.
+        """
+        exact_fgts_re = re.compile(
+            r"^\s*(?:\|?\s*)?(?:FGTS)\s*(?:\|?\s*)?$", re.IGNORECASE
+        )
+        forbidden_fgts_re = re.compile(
+            r"\bFGTS\s*8\s*%|\bMULTA\s+SOBRE\s+FGTS", re.IGNORECASE
+        )
+
+        for line in text.splitlines():
+            if not line or forbidden_fgts_re.search(line):
+                continue
+
+            label_without_money = re.sub(MONEY_RE, " ", line, flags=re.IGNORECASE)
+            label_without_money = re.sub(r"[ \t]+", " ", label_without_money).strip()
+
+            if not exact_fgts_re.match(label_without_money):
+                continue
+
+            money_match = re.search(MONEY_RE, line, re.IGNORECASE)
+            if money_match:
+                return to_decimal(money_match.group(0))
 
         return None
 
-    def extract_field_value(self, table: str, field_name: str) -> Decimal | None:
+    def _extract_fields_from_text(
+        self, text: str, labor_claim_info: LaborClaimInfo, matched_fields: list[str]
+    ) -> LaborClaimInfo:
         """
-        Extrai o valor de um campo específico a partir das tabelas extraídas do PDF, usando um padrão de label.
-        :param table: O texto da tabela, com quebras de linha e espaços limpos.
-        :param field_name: O nome do campo a ser extraído, que deve corresponder a uma chave no field_pattern_map.
+        Tenta extrair os campos de interesse diretamente do texto normalizado da página.
+        :param text: Texto normalizado da página.
+        :param labor_claim_info: Dicionário atual de informações extraídas.
+        :param matched_fields: Campos pendentes cujos labels aparecem na página.
+        :return: Dicionário atualizado.
         """
-        if field_name == "liquido_devido_ao_advogado":
-            honorarios_total = self._extract_honorarios_demonstrativo_total(table)
-            if honorarios_total is not None:
-                return honorarios_total
+        for field_name in list(matched_fields):
+            if field_name in labor_claim_info:
+                continue
+
+            extracted = self._extract_field_value_from_text(text, field_name)
+
+            if extracted is not None:
+                labor_claim_info[field_name] = extracted
+                matched_fields.remove(field_name)
+
+        return labor_claim_info
+
+    def _extract_field_value_from_text(
+        self, text: str, field_name: str
+    ) -> Decimal | None:
+        """
+        Extrai o valor de um campo diretamente do texto normalizado da página.
+        :param text: Texto normalizado da página.
+        :param field_name: Nome do campo desejado.
+        :return: Valor extraído como Decimal, ou None.
+        """
+
+        if field_name == "valor_do_fgts":
+            extracted_fgts = self._extract_fgts_field_value(text)
+            if extracted_fgts is not None:
+                return extracted_fgts
 
         field_pattern = self.field_pattern_map.get(field_name)
         if not field_pattern:
             return None
 
-        label_re = re.compile(
-            rf"^\*{{0,2}}\s*{field_pattern}\s*\*{{0,2}}\s*$", re.IGNORECASE
-        )
-        money_re = re.compile(
-            rf"^\*{{0,2}}\s*({MONEY_RE})\s*\*{{0,2}}\s*$", re.IGNORECASE
-        )
+        extracted_value = self._extract_money_on_same_line_as_label(text, field_pattern)
 
-        for raw_line in table.splitlines():
-            cells = self._extract_line_cells(raw_line)
-            if not cells:
+        if extracted_value is not None and field_name == "valor_de_irrf":
+            return abs(extracted_value)
+
+        return extracted_value
+
+    @staticmethod
+    def _extract_money_on_same_line_as_label(
+        text: str, field_pattern: str
+    ) -> Decimal | None:
+        """
+        Extrai um valor monetário que esteja na mesma linha do label.
+
+        A busca aceita valor depois ou antes do label na mesma linha, mas descarta
+        candidatos em outras linhas para evitar capturar valores de campos vizinhos.
+
+        :param text: Texto normalizado da página ou tabela.
+        :param field_pattern: Regex usado para localizar o label do campo.
+        :return: Valor monetário convertido para Decimal, ou None se nada for encontrado.
+        """
+        label_re = re.compile(field_pattern, re.IGNORECASE)
+
+        for line in text.splitlines():
+            if not line:
                 continue
-            for idx, cell in enumerate(cells):
-                if not label_re.match(cell):
-                    continue
 
-                for candidate in cells[idx + 1 :]:
-                    m = money_re.match(candidate) or re.search(
-                        MONEY_RE, candidate, re.IGNORECASE
-                    )
-                    if not m:
-                        continue
-                    raw_value = m.group(1) if m.lastindex else m.group(0)
-                    return self._to_decimal(raw_value)
-                break
+            label_match = label_re.search(line)
+            if not label_match:
+                continue
 
-        return self.extract_field_values_broken_table(table, field_pattern)
+            money_matches = list(re.finditer(MONEY_RE, line, re.IGNORECASE))
+            if not money_matches:
+                continue
+
+            candidates: list[tuple[int, str]] = []
+
+            for money_match in money_matches:
+                if money_match.end() <= label_match.start():
+                    distance = label_match.start() - money_match.end()
+                elif money_match.start() >= label_match.end():
+                    distance = money_match.start() - label_match.end()
+                else:
+                    distance = 0
+
+                candidates.append((distance, money_match.group(0)))
+
+            _, raw_value = min(candidates, key=lambda item: item[0])
+            return to_decimal(raw_value)
+
+        return None
 
 
 if __name__ == "__main__":
