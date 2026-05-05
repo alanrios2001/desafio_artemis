@@ -40,7 +40,7 @@ class LaborClaimCalculationExtractor:
         # buscando variações comuns de labels encontrados nos PDFs
         self.field_pattern_map = {
             "total_devido_pelo_reclamado": (
-                r"(?:TOTAL\s+DEVIDO(?:\s+PELO)?\s+RECLAMAD[OA]"
+                r"(?:TOTAL\s+DEVIDO(?:\s+PEL[AO])?\s+RECLAMAD[OA]"
                 r"|TOTAL\s+DEVIDO\s+PELA\s+RECLAMAD[AO]"
                 r"|TOTAL\s+DA\s+RECLAMAD[AO]\s+APOS\s+DEDUCOES)"
             ),
@@ -141,10 +141,16 @@ class LaborClaimCalculationExtractor:
 
                 # usa tabelas apenas como fallback para o que ainda não foi encontrado
                 if remaining_pattern_matches:
-                    page_tables = [table.to_markdown() for table in page.find_tables()]
-                    self._extract_fields_from_tables(
-                        page_tables, labor_claim_info, remaining_pattern_matches
-                    )
+                    try:
+                        page_tables = [table.to_markdown() for table in page.find_tables()]
+                        self._extract_fields_from_tables(
+                            page_tables, labor_claim_info, remaining_pattern_matches
+                        )
+                    except Exception as e:
+                        logger.warning(
+                            f"[LaborClaimCalculationExtractor][extract] PDF:{pdf_name}\n\t"
+                            f"Erro ao extrair tabelas da página {page_index}: {e}"
+                        )
             if pending_patterns:
                 for pattern, _ in pending_patterns:
                     labor_claim_info[pattern] = Decimal(0)
@@ -309,7 +315,8 @@ class LaborClaimCalculationExtractor:
         cells = [re.sub(r"<[^>]+>", " ", c).strip() for c in line.strip("|").split("|")]
         return [re.sub(r"\s+", " ", c).strip() for c in cells]
 
-    def _extract_fgts_field_value(self, text: str) -> Decimal | None:
+    @staticmethod
+    def _extract_fgts_field_value(text: str) -> Decimal | None:
         """
         Extrai o valor final de FGTS, aceitando apenas linhas cujo label seja exatamente 'FGTS'.
 
@@ -414,7 +421,7 @@ class LaborClaimCalculationExtractor:
 
             candidates: list[tuple[int, str]] = []
 
-            for money_match in money_matches:
+            for money_match in money_matches[::-1]:
                 if money_match.end() <= label_match.start():
                     distance = label_match.start() - money_match.end()
                 elif money_match.start() >= label_match.end():
@@ -448,6 +455,6 @@ if __name__ == "__main__":
                 continue
             print(extractor.extract(pdf_file))
 
-    print(extractor.extract(data_path / "0011084-61.2016.5.15.0109.pdf"))
+    print(extractor.extract(data_path / "0020588-37.2021.5.04.0331.pdf"))
 
     # run_all_pdfs()
