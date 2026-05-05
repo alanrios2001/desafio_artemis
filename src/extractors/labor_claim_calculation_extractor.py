@@ -53,9 +53,8 @@ class LaborClaimCalculationExtractor:
                 r"|TOTAL\s+LIQUIDO\s+DEVIDO\s+AO\s+AUTOR)"
             ),
             "liquido_devido_ao_advogado": (
-                r"(?:LIQUIDO\s+DEVIDO\s+AO\s+ADVOGADO"
-                r"|TOTAL\s+LIQUIDO\s+DEVIDO\s+AO\s+ADVOGADO"
-                r"|HONORARIOS\s+LIQUIDOS?\s+PARA(?:\s+.+)?)"
+                r"(?:DEMONSTRATIVO\s+DE\s+HONORARIOS"
+                r"|NOME\s*:\s*HONORARIOS\s+DEVIDOS\s+PELO\s+RECLAMADO)"
             ),
             "valor_de_irrf": (
                 r"(?:IRRF\s+DEVIDO\s+PELO\s+RECLAMANTE"
@@ -153,13 +152,19 @@ class LaborClaimCalculationExtractor:
                             f"[LaborClaimCalculationExtractor][extract] PDF:{pdf_name}\n\t"
                             f"Erro ao extrair tabelas da página {page_index}: {e}"
                         )
-            if pending_patterns:
-                for pattern, _ in pending_patterns:
-                    labor_claim_info[pattern] = Decimal(0)
+
+            remaining_fields = [
+                field
+                for field in self.field_pattern_map
+                if field not in labor_claim_info
+            ]
+            if remaining_fields:
+                for field in remaining_fields:
+                    labor_claim_info[field] = Decimal(0)
                 logger.warning(
                     f"[LaborClaimCalculationExtractor][extract] PDF:{pdf_name}\n\t"
                     "Extração concluída, mas os seguintes campos não foram encontrados: "
-                    f"{', '.join([field for field, _ in pending_patterns])}."
+                    f"{', '.join(remaining_fields)}."
                 )
 
         return labor_claim_info
@@ -230,9 +235,7 @@ class LaborClaimCalculationExtractor:
         :param field_name: O nome do campo a ser extraído, que deve corresponder a uma chave no field_pattern_map.
         """
         if field_name == "liquido_devido_ao_advogado":
-            honorarios_total = self._extract_honorarios_demonstrativo_total(table)
-            if honorarios_total is not None:
-                return honorarios_total
+            return self._extract_honorarios_demonstrativo_total(table)
 
         if field_name == "valor_do_fgts":
             return self._extract_fgts_field_value(table)
@@ -268,36 +271,166 @@ class LaborClaimCalculationExtractor:
 
         return self._extract_money_on_same_line_as_label(table, field_pattern)
 
-    def _extract_honorarios_demonstrativo_total(self, table: str) -> Decimal | None:
+    def _extract_honorarios_demonstrativo_total(self, text: str) -> Decimal | None:
         """
-        Extração específica para o caso dos honorários advocatícios no demonstrativo de cálculos
-        :param table: O texto da tabela, com quebras de linha e espaços limpos.
-        :return: O valor total dos honorários advocatícios, ou None se não for encontrado.
+        Extrai honorários do advogado apenas do Demonstrativo de Honorários.
+
+        A extração considera somente blocos "NOME: HONORARIOS DEVIDOS PELO RECLAMADO"
+        e soma ocorrências de honorários advocatícios/sucumbenciais. Isso evita
+        capturar honorários periciais ou totais gerais sem discriminação.
+
+        :param text: Texto normalizado da página (xhtml) ou tabela Markdown.
+        :return: Soma dos honorários devidos ao advogado, ou None se não encontrado.
         """
-        if "DEMONSTRATIVO DE HONORARIOS" not in table.upper():
+        blocks = self._extract_honorarios_reclamado_blocks(text)
+        if not blocks:
             return None
 
-        total_cell_re = re.compile(r"^\*{0,2}\s*TOTAL\s*\*{0,2}$", re.IGNORECASE)
+        total = Decimal("0")
+        found_value = False
+        target_re = re.compile(
+            r"HONORARIOS\s+(?:ADVOCATICIOS|(?:DE\s+)?SUCUMBENCIA)", re.IGNORECASE
+        )
 
-        for raw_line in table.splitlines():
-            cells = self._extract_line_cells(raw_line)
-            if not cells:
+        for block in blocks:
+            found_in_block = False
+            non_empty_lines = [line for line in block.splitlines() if line.strip()]
+
+            if len(non_empty_lines) > 1:
+                for raw_line in non_empty_lines:
+                    line_text = re.sub(r"[|*]", " ", raw_line)
+                    line_text = re.sub(r"\s+", " ", line_text).strip()
+
+                    if not target_re.search(line_text):
+                        continue
+
+                    cells = self._extract_line_cells(raw_line)
+                    value = (
+                        self._extract_last_money_from_cells(cells)
+                        if cells
+                        else self._extract_last_money_from_line(line_text)
+                    )
+
+                    if value is None:
+                        continue
+
+                    total += value
+                    found_value = True
+                    found_in_block = True
+
+            if found_in_block:
                 continue
 
-            if not any(total_cell_re.match(c) for c in cells):
-                continue
+            sanitized_block = re.sub(r"[|*]", " ", block)
+            sanitized_block = re.sub(r"\s+", " ", sanitized_block).strip()
 
-            for candidate in reversed(cells):
-                m = re.search(MONEY_RE, candidate, re.IGNORECASE)
-                if m:
-                    cleaned = re.sub(r"[^\d,()]", "", m.group(0)).strip()
-                    is_negative = cleaned.startswith("(") and cleaned.endswith(")")
-                    numeric = cleaned.strip("()").replace(".", "").replace(",", ".")
-                    try:
-                        value = Decimal(numeric)
-                        return -value if is_negative else value
-                    except Exception:
-                        return None
+            for target_match in target_re.finditer(sanitized_block):
+                value = self._extract_money_closest_to_span(
+                    sanitized_block, target_match.start(), target_match.end()
+                )
+                if value is None:
+                    continue
+
+                total += value
+                found_value = True
+
+        return total if found_value else None
+
+    @staticmethod
+    def _extract_honorarios_reclamado_blocks(text: str) -> list[str]:
+        """
+        Recorta blocos do Demonstrativo de Honorários devidos pelo reclamado.
+
+        O recorte é tolerante a texto corrido (xhtml normalizado) e a linhas de
+        tabela Markdown, evitando depender exclusivamente de quebras de linha.
+
+        :param text: Texto normalizado da página ou tabela.
+        :return: Lista de blocos do demonstrativo de honorários do reclamado.
+        """
+        cleaned_text = re.sub(r"[|*]", " ", text)
+        cleaned_text = re.sub(r"[ \t\r\f\v]+", " ", cleaned_text).strip()
+
+        if not re.search(
+            r"DEMONSTRATIVO\s+DE\s+HONORARIOS", cleaned_text, re.IGNORECASE
+        ):
+            return []
+
+        demonstrativo_re = re.compile(
+            r"DEMONSTRATIVO\s+DE\s+HONORARIOS(?P<body>.*?)(?=DEMONSTRATIVO\s+DE\s+|$)",
+            re.IGNORECASE | re.DOTALL,
+        )
+        reclamado_block_re = re.compile(
+            r"NOME\s*:\s*HONORARIOS\s+DEVIDOS\s+PELO\s+RECLAMADO(?P<body>.*?)(?=NOME\s*:|$)",
+            re.IGNORECASE | re.DOTALL,
+        )
+
+        blocks: list[str] = []
+        for demonstrativo_match in demonstrativo_re.finditer(cleaned_text):
+            demonstrativo_body = demonstrativo_match.group("body")
+            for block_match in reclamado_block_re.finditer(demonstrativo_body):
+                blocks.append(block_match.group("body"))
+
+        return blocks
+
+    @staticmethod
+    def _extract_money_closest_to_span(
+        text: str, span_start: int, span_end: int
+    ) -> Decimal | None:
+        """
+        Retorna o valor monetário mais próximo de um intervalo de texto.
+
+        Útil para linhas longas/tabelas em que o label e o valor não estão em
+        células separadas de forma confiável.
+        """
+        money_matches = list(re.finditer(MONEY_RE, text, re.IGNORECASE))
+        if not money_matches:
+            return None
+
+        before_matches = [match for match in money_matches if match.end() <= span_start]
+        if before_matches:
+            closest_before = min(
+                before_matches, key=lambda match: span_start - match.end()
+            )
+            return to_decimal(closest_before.group(0))
+
+        after_matches = [match for match in money_matches if match.start() >= span_end]
+        if not after_matches:
+            return None
+
+        closest_after = min(after_matches, key=lambda match: match.start() - span_end)
+        return to_decimal(closest_after.group(0))
+
+    @staticmethod
+    def _extract_last_money_from_line(line: str) -> Decimal | None:
+        """
+        Extrai o último valor monetário de uma linha.
+
+        Em linhas como:
+        30/04/2025 30.385,04 15,00 % 4.557,76 HONORARIOS ADVOCATICIOS ...
+
+        o último valor monetário é o valor calculado dos honorários.
+
+        :param line: Linha de texto.
+        :return: Último valor monetário da linha, ou None.
+        """
+        money_matches = list(re.finditer(MONEY_RE, line, re.IGNORECASE))
+        if not money_matches:
+            return None
+
+        return to_decimal(money_matches[-1].group(0))
+
+    @staticmethod
+    def _extract_last_money_from_cells(cells: list[str]) -> Decimal | None:
+        """
+        Extrai o último valor monetário encontrado nas células de uma linha Markdown.
+        :param cells: Células extraídas de uma linha de tabela.
+        :return: Último valor monetário encontrado, ou None.
+        """
+        for cell in reversed(cells):
+            money_match = re.search(MONEY_RE, cell, re.IGNORECASE)
+            if money_match:
+                return to_decimal(money_match.group(0))
+
         return None
 
     def _extract_line_cells(self, raw_line: str) -> list[str]:
@@ -450,6 +583,8 @@ class LaborClaimCalculationExtractor:
         :param field_name: Nome do campo desejado.
         :return: Valor extraído como Decimal, ou None.
         """
+        if field_name == "liquido_devido_ao_advogado":
+            return self._extract_honorarios_demonstrativo_total(text)
 
         if field_name == "valor_do_fgts":
             return self._extract_fgts_field_value(text)
@@ -529,6 +664,6 @@ if __name__ == "__main__":
                 continue
             print(extractor.extract(pdf_file))
 
-    print(extractor.extract(data_path / "0020588-37.2021.5.04.0331.pdf"))
+    print(extractor.extract(data_path / "1001111-10.2022.5.02.0047.pdf"))
 
     # run_all_pdfs()
