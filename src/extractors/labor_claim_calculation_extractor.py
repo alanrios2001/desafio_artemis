@@ -227,9 +227,7 @@ class LaborClaimCalculationExtractor:
                 return honorarios_total
 
         if field_name == "valor_do_fgts":
-            extracted_fgts = self._extract_fgts_field_value(table)
-            if extracted_fgts is not None:
-                return extracted_fgts
+            return None
 
         field_pattern = self.field_pattern_map.get(field_name)
         if not field_pattern:
@@ -311,37 +309,32 @@ class LaborClaimCalculationExtractor:
         cells = [re.sub(r"<[^>]+>", " ", c).strip() for c in line.strip("|").split("|")]
         return [re.sub(r"\s+", " ", c).strip() for c in cells]
 
-    @staticmethod
-    def _extract_fgts_field_value(text: str) -> Decimal | None:
+    def _extract_fgts_field_value(self, text: str) -> Decimal | None:
         """
-        Extrai o valor final de FGTS, priorizando a linha cujo label seja exatamente 'FGTS'.
+        Extrai o valor final de FGTS, aceitando apenas linhas cujo label seja exatamente 'FGTS'.
 
-        Evita capturar valores intermediários como 'FGTS 8%', que normalmente representam
-        uma verba específica do demonstrativo, não o total consolidado do campo solicitado.
+        Isso evita capturar linhas intermediárias como:
+        - FGTS 8% 6.886,94 15.650,90 8.763,96
+        - MULTA SOBRE FGTS 40% 2.607,33 5.970,54 3.363,21
 
         :param text: Texto normalizado da página ou tabela.
         :return: Valor de FGTS convertido para Decimal, ou None se não for encontrado.
         """
-        exact_fgts_re = re.compile(
-            r"^\s*(?:\|?\s*)?(?:FGTS)\s*(?:\|?\s*)?$", re.IGNORECASE
-        )
-        forbidden_fgts_re = re.compile(
-            r"\bFGTS\s*8\s*%|\bMULTA\s+SOBRE\s+FGTS", re.IGNORECASE
-        )
-
         for line in text.splitlines():
-            if not line or forbidden_fgts_re.search(line):
+            if not line:
                 continue
 
-            label_without_money = re.sub(MONEY_RE, " ", line, flags=re.IGNORECASE)
-            label_without_money = re.sub(r"[ \t]+", " ", label_without_money).strip()
-
-            if not exact_fgts_re.match(label_without_money):
+            money_matches = list(re.finditer(MONEY_RE, line, re.IGNORECASE))
+            if not money_matches:
                 continue
 
-            money_match = re.search(MONEY_RE, line, re.IGNORECASE)
-            if money_match:
-                return to_decimal(money_match.group(0))
+            label_without_values = re.sub(MONEY_RE, " ", line, flags=re.IGNORECASE)
+            label_without_values = re.sub(r"\s+", " ", label_without_values).strip()
+
+            if not bool(re.fullmatch(r"FGTS", label_without_values)):
+                continue
+
+            return to_decimal(money_matches[0].group(0))
 
         return None
 
@@ -378,9 +371,7 @@ class LaborClaimCalculationExtractor:
         """
 
         if field_name == "valor_do_fgts":
-            extracted_fgts = self._extract_fgts_field_value(text)
-            if extracted_fgts is not None:
-                return extracted_fgts
+            return self._extract_fgts_field_value(text)
 
         field_pattern = self.field_pattern_map.get(field_name)
         if not field_pattern:
@@ -457,6 +448,6 @@ if __name__ == "__main__":
                 continue
             print(extractor.extract(pdf_file))
 
-    # print(extractor.extract(data_path / "0000380-42.2023.5.05.0005.pdf"))
+    print(extractor.extract(data_path / "0011084-61.2016.5.15.0109.pdf"))
 
-    run_all_pdfs()
+    # run_all_pdfs()
