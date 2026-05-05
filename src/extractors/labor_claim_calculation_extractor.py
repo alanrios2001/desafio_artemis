@@ -142,7 +142,9 @@ class LaborClaimCalculationExtractor:
                 # usa tabelas apenas como fallback para o que ainda não foi encontrado
                 if remaining_pattern_matches:
                     try:
-                        page_tables = [table.to_markdown() for table in page.find_tables()]
+                        page_tables = [
+                            table.to_markdown() for table in page.find_tables()
+                        ]
                         self._extract_fields_from_tables(
                             page_tables, labor_claim_info, remaining_pattern_matches
                         )
@@ -233,7 +235,7 @@ class LaborClaimCalculationExtractor:
                 return honorarios_total
 
         if field_name == "valor_do_fgts":
-            return None
+            return self._extract_fgts_field_value(table)
 
         field_pattern = self.field_pattern_map.get(field_name)
         if not field_pattern:
@@ -315,19 +317,47 @@ class LaborClaimCalculationExtractor:
         cells = [re.sub(r"<[^>]+>", " ", c).strip() for c in line.strip("|").split("|")]
         return [re.sub(r"\s+", " ", c).strip() for c in cells]
 
-    @staticmethod
-    def _extract_fgts_field_value(text: str) -> Decimal | None:
+    def _extract_fgts_field_value(self, text: str) -> Decimal | None:
         """
-        Extrai o valor final de FGTS, aceitando apenas linhas cujo label seja exatamente 'FGTS'.
+        Extrai o valor final de FGTS.
+
+        A ordem de prioridade é:
+        1. linha cujo label seja exatamente 'FGTS';
+        2. linha 'TOTAL DEVIDO AO AUTOR', usando a coluna FGTS.
 
         Isso evita capturar linhas intermediárias como:
         - FGTS 8% 6.886,94 15.650,90 8.763,96
         - MULTA SOBRE FGTS 40% 2.607,33 5.970,54 3.363,21
+        - DIFERENCA DE FGTS DO CONTRATO 0,00 0,00 0,00 2.259,62 0,00 2.259,62
 
         :param text: Texto normalizado da página ou tabela.
         :return: Valor de FGTS convertido para Decimal, ou None se não for encontrado.
         """
-        for line in text.splitlines():
+        exact_fgts_value = self._extract_exact_fgts_line_value(text)
+        if exact_fgts_value is not None:
+            return exact_fgts_value
+
+        return self._extract_fgts_from_total_devido_ao_autor(text)
+
+    @staticmethod
+    def _extract_exact_fgts_line_value(text: str) -> Decimal | None:
+        """
+        Extrai o valor de linhas cujo label seja exatamente 'FGTS'.
+
+        Aceita casos como:
+        - FGTS 21.621,44
+        - 21.621,44 FGTS
+        - | FGTS | 21.621,44 |
+
+        Descarta casos como:
+        - FGTS 8% 6.886,94
+        - MULTA SOBRE FGTS 40% 2.607,33
+
+        :param text: Texto normalizado da página ou tabela.
+        :return: Valor de FGTS convertido para Decimal, ou None se não for encontrado.
+        """
+        for raw_line in text.splitlines():
+            line = raw_line.strip()
             if not line:
                 continue
 
@@ -336,12 +366,56 @@ class LaborClaimCalculationExtractor:
                 continue
 
             label_without_values = re.sub(MONEY_RE, " ", line, flags=re.IGNORECASE)
+            label_without_values = re.sub(r"[|*:]", " ", label_without_values)
             label_without_values = re.sub(r"\s+", " ", label_without_values).strip()
 
-            if not bool(re.fullmatch(r"FGTS", label_without_values)):
+            if not re.fullmatch(r"FGTS", label_without_values, flags=re.IGNORECASE):
                 continue
 
             return to_decimal(money_matches[0].group(0))
+
+        return None
+
+    @staticmethod
+    def _extract_fgts_from_total_devido_ao_autor(text: str) -> Decimal | None:
+        """
+        Extrai o FGTS em tabelas que possuem colunas monetárias, como:
+
+        PEDIDOS | VLR. PRINC | VLR. CORRECAO | JUROS | FGTS | JUROS FGTS | TOTAL
+        TOTAL DEVIDO AO AUTOR 43.945,62 5.003,02 16.888,37 5.887,51 2.041,93 73.766,45
+
+        Nesse layout, o valor correto de FGTS é o 4º valor monetário da linha
+        'TOTAL DEVIDO AO AUTOR', pois corresponde à coluna FGTS.
+
+        :param text: Texto normalizado da página ou tabela.
+        :return: Valor da coluna FGTS na linha total, ou None se não for encontrado.
+        """
+        if not re.search(r"\bFGTS\b", text, re.IGNORECASE):
+            return None
+
+        if not re.search(r"\bJUROS\s+FGTS\b", text, re.IGNORECASE):
+            return None
+
+        total_devido_ao_autor_re = re.compile(
+            r"\bTOTAL\s+DEVIDO\s+AO\s+AUTOR\b", re.IGNORECASE
+        )
+
+        for raw_line in text.splitlines():
+            line = re.sub(r"[|*]", " ", raw_line)
+            line = re.sub(r"\s+", " ", line).strip()
+
+            if not total_devido_ao_autor_re.search(line):
+                continue
+
+            money_matches = list(re.finditer(MONEY_RE, line, re.IGNORECASE))
+
+            # Esperado:
+            # VLR. PRINC, VLR. CORRECAO, JUROS, FGTS, JUROS FGTS, TOTAL
+            if len(money_matches) < 6:
+                continue
+
+            fgts_match = money_matches[3]
+            return to_decimal(fgts_match.group(0))
 
         return None
 
