@@ -1,135 +1,140 @@
 # Desafio Artemis
 
-> O objetivo do projeto é ter uma funcionalidade para extrair informações contábeis processuais de arquivos PDF.
+> O objetivo do projeto é extrair informações contábeis processuais de arquivos PDF.
 
 ## Estrutura do projeto
+
 ```text
 .
 ├── config.py / settings.toml
 │   └── Configuração central com Dynaconf
-├── escavai_dataset/
-│   └── Ferramentas de stats, dedup e conversão de datasets
 ├── src/
 │   ├── extractors/
-│       ├──labor_claim_calculation_extractor.py / ...
-│           └── Extração de dados a partir de PDFs, com foco em cálculos trabalhistas
+│   │   └── labor_claim_calculation_extractor.py / ...
+│   │       └── Extração de dados a partir de PDFs, com foco em cálculos trabalhistas
 │   └── main.py
 ├── tests/
-│   └── test_labor_claim_calculation_extractor.py
-│   ├── data/
-│       └──Casos de teste para os testes unitários separado por pasta.
-└── Raiz do projeto com readme, pastas de configuração, pyproject.toml, etc.
+│   ├── test_labor_claim_calculation_extractor.py
+│   └── data/
+│       └── Casos de teste para testes unitários, separados por pasta
+└── Raiz do projeto com README, pastas de configuração, pyproject.toml etc.
 ```
 
-Stack principal: Python + Poetry + Dynaconf + pymupdf
+Stack principal: Python + Poetry + Dynaconf + pymupdf.
 
-## Como Instalar o projeto
+## Como instalar o projeto
 
 ```bash
-# Install Poetry
+# Instalar Poetry
 # Ubuntu/Debian
 curl -sSL https://install.python-poetry.org | python3 -
 
 # Windows
 pip install poetry
 
-# Clone o repositório
+# Clonar o repositório
 git clone https://github.com/alanrios2001/desafio_artemis.git
 
-# Entre na pasta do projeto
+# Entrar na pasta do projeto
 cd desafio_artemis
 
-# Setup
+# Instalar dependências
 poetry install
 ```
 
 ## Como executar o projeto
 
 ```bash
-# Ative o ambiente virtual do Poetry
+# Ativar o ambiente virtual do Poetry
 poetry shell
-# Execute o script principal
+
+# Executar o script principal
 poetry run python src/main.py
 ```
 
-## Tecnologias e Soluções adotadas.
+## Tecnologias e soluções adotadas
 
-- **Python**: Linguagem principal para desenvolvimento.
-- **Poetry**: Gerenciamento de dependências e ambiente virtual.
-- **Dynaconf**: Configuração centralizada e flexível.
-- **pymupdf**: Biblioteca para extração de texto e dados de arquivos PDF
+- **Python**: linguagem principal para desenvolvimento.
+- **Poetry**: gerenciamento de dependências e ambiente virtual.
+- **Dynaconf**: configuração centralizada e flexível.
+- **pymupdf**: extração de texto e dados de arquivos PDF.
+- **Regex + heurística de proximidade**: identificação de rótulos e seleção do valor monetário mais próximo (com prioridade para a direita/mesma linha).
+- **asyncio**: pipeline assíncrono para produzir e consumir PDFs em paralelo no processamento em lote.
+- **dataclass**: estrutura de estado da extração com tipagem explícita e serialização final via `to_dict()`.
 
-O projeto foi estrutuado para ser modular e escalável.
-Específicamente na classe de extração de cálculos trabalhistas, foi utilizado o pymupdf para ler o conteúdo dos PDFs,
-técnicas com modelos para OCR foram descartadas, pois todo o úniverso de PDF's a serem processados possuem
-texto selecionável.
+O projeto foi estruturado para ser modular e escalável.
+Na classe de extração de cálculos trabalhistas, o `pymupdf` é utilizado para ler o conteúdo dos PDFs.
+Técnicas com OCR foram descartadas porque o universo de PDFs processados possui texto selecionável.
 
-Extrair tabelas do pdf é um pouco mais custoso utilizando o método 
-".find_tables()" dos objetos de página do pymudf + .to_markdown(), então foi feito um fluxo em que primeiro se tenta
-extrair as informações a partir do método .get_text("xhtml), decodificando o xhtml com o html.unescape,
-normalizando o xhtml decodificado removendo espaços extra, acentuações e preservando quebras de linhas. E caso não
-seja possível extrair as informações a partir do xhtml, há um fallback utilizando a extração de tabelas
-com o método .find_tables() + .to_markdown().
+Extrair tabelas do PDF é mais custoso com `page.find_tables()` + `to_markdown()`. Por isso, o fluxo primeiro tenta extrair informações via `get_text("xhtml")`, decodificando com `html.unescape` e normalizando o conteúdo (removendo espaços extras, acentuação e preservando quebras de linha). Se essa etapa não for suficiente, entra o fallback de tabelas com `find_tables()` + `to_markdown()`.
 
-A extrutura de dados utilizada para armazenar oc campos extraídos foi um DataClass, por permitir criar
-métodos de validação, inserção, verificação de campos preenchidos, evitando erros de tipagem. Nesse dataclass, foi
-criado um método .to_dict() para converter o objeto em um dicionário, requisito de retorno do projeto.
+A extração textual é guiada por regex e heurísticas de proximidade entre rótulo e valor, reduzindo falsos positivos e priorizando candidatos mais confiáveis por contexto de linha.
 
+No processamento em lote, há uma orquestração assíncrona com `asyncio`, usando fila de PDFs e workers consumidores para manter boa vazão.
 
-Fluxo genérico:
+A estrutura de dados para armazenar os campos extraídos é um `dataclass`, que mantém o estado acumulado da extração com tipagem mais segura e converte o resultado final para dicionário via `to_dict()`, atendendo ao requisito de retorno do projeto.
 
-O PDF é iterado em chunks, de forma a evitar tabelas quebradas e problemas nas extrações dos valores,
-tem seu texto extraído em xhtml decodificado e normalizado.
-O Texto passar por um método para identificar os rótulos e valores ali presentes, que retorna os campos pendentes
-de extração e os campos pendentes que tiveram o regex com match na página.
-Caso existam campos pendentes com regex match, é feita uma lógica de extração a partir do xhtml, é tentado
-realizar as extrações somentes do campo com regex match, para evitar tentativas de extração desnecessárias,
-e cair no fallback de tabelas sem motivo, deixando o processo mais otimizado.
+## Fluxo genérico
 
-Seguindo o fluxo de extração a partir do xhtml:
-Como a natureza dos dados que foram requisitados para extração geralmente aparecem em tabelas e caso esteja
-fora de uma tabela, tem um rótulo proximo a ele, foi feita uma lógica de identificação de padrões de rótulos e valores,
-utilizando regex para identificar os rótulos e os valores próximos a eles. em que em um range de distancia de chars
-a partir do rótulo, é calculada a distancia de chars entre o rótulo e os valores próximos a ele, 
-e o valor mais próximo é selecionado como o valor do rótulo, o desempate é o rótulo à direita ou na mesma
-linha do rótulo.
+1. O PDF é iterado em chunks para evitar tabelas quebradas e reduzir erros na extração dos valores.
+2. O texto é extraído em XHTML, decodificado e normalizado.
+3. O conteúdo passa por um método que identifica rótulos e valores, retornando:
+   - campos ainda pendentes;
+   - campos pendentes que tiveram match de regex na página.
+4. Quando há campo pendente com regex match, a extração tenta focar somente nesses campos para evitar tentativas desnecessárias e fallback prematuro.
 
-Após a primeira etapa, é verificado se os campos de match ainda estão pendentes, caso estejam, o fluxo vai para fallback
-e tenta extrair os campos a partir das tabelas, que tem o chunk iterado pagia a pagina, utilizando o método
-.find_tables() do pymupdf, e convertendo as tabelas
-em markdown com o método .to_markdown(), e utilizando regex para identificar os campos a partir do markdown da tabela,
-processando linha a linha, selecionando os campos que possuem match com os campos pendentes, e selecionando 
-o valor a direita do campo.
+### Extração via XHTML
 
-Caso o campo não tenha sido extraído de nenhuma forma, o campo passa a ter o valor None para
-diferenciar de quando o valor do campo é 0.
+Como os dados geralmente aparecem em tabelas (ou com rótulos próximos), foi aplicada uma estratégia de proximidade entre rótulo e valor:
 
+- usa regex para identificar rótulos e valores próximos;
+- calcula a distância em caracteres entre o rótulo e os candidatos a valor;
+- escolhe o valor mais próximo;
+- em caso de empate, prioriza o valor à direita ou na mesma linha do rótulo.
 
-Regras específicas:
+### Fallback via tabelas
 
-Existem regras específicas para 3 campos, que possuem casos de borda mais complexos,
-que são: "liquido_devido_ao_advogado", "valor_do_fgts", "contribuicao_social_sobre_salarios_devido", "valor_do_irrf".
+Se ainda houver campos pendentes após a etapa XHTML:
 
-"liquido_devido_ao_advogado": Nesse caso, a descrição dos honorarios na maioria dos casos aparece no Demonstrativo
-de honorários, que engloba varios tipos de honorários, como o honorário advocatício/sucubencial, pericial, etc. O valor
-total desse demonstrativo, engloba todos esses tipos de honorários, então é necessario identificar os honorários
-referentes somente ao advogado, e somar. Além disso, tem honorários devidos pelo Reclamado e Reclamante,
-em tabelas diferentes, então esse campo é tratado de forma mais específica. Os outros casos são referentes a diferentes
-formatações de tabelas e texto, mas o valor está aparentemente somado.
+- o chunk é iterado página por página;
+- as tabelas são extraídas com `find_tables()` e convertidas com `to_markdown()`;
+- o markdown é processado linha a linha com regex;
+- para cada campo pendente com match, seleciona-se o valor à direita do rótulo.
 
-"valor_do_fgts": O valor do fgts tem labels que possuem o valor já corretamente somado e descontado, e labels de linhas
-de tabelas com colunas e varios valores, que são mais custosos de extrair, além de ter FGTS em varias partes do PDF,
-o que pode levar a falsos positivos. O que a gente quer, é o campo "FGTS" presente na maior parte dos PDF's
-(PJe-Calc Cidadão). Porém existem casos do valor do FGTS já somado estar em tabelas compostas de uma coluna,
-e o campo correto ter o label "Total"  (Laudo Pericial), e um caso em que o valor do FGTS está em uma tabela
-composta com varias colunas e a linha com o valor total ter o label "TOTAL DEVIDO AO AUTOR".
+Caso o campo não seja extraído por nenhuma estratégia, ele recebe valor `None` para diferenciar de campos cujo valor real é `0`.
 
-"contribuição_social_sobre_salarios_devido": Esse campo possui casos de borda mais simples, mas vale a pena
-separa-lo. Os valores sempre estarão na mesma linha do rótulo, mas existem casos em que o valor aparece
-separado entre o reclamado e a reclamada, necessitando de uma soma.
+## Regras específicas
 
-"valor_do_irrf": O valor do IRRF tem casos de borda mais simples, mas existem casos em que o valor aparecem
-em blocos de Demonstrativo, e diferentes labels.
+Existem regras específicas para campos com casos de borda mais complexos:
+
+- `liquido_devido_ao_advogado`
+- `valor_do_fgts`
+- `contribuicao_social_sobre_salarios_devido`
+- `valor_do_irrf`
+
+### `liquido_devido_ao_advogado`
+
+Na maioria dos casos, a descrição aparece no Demonstrativo de Honorários, que engloba tipos diferentes (advocatício/sucumbencial, pericial etc.). Como o total mistura naturezas distintas, é necessário identificar e somar apenas os honorários referentes ao advogado.
+
+Também há honorários devidos pelo reclamado e pelo reclamante em tabelas diferentes, então esse campo recebe tratamento mais específico. Há ainda variações de formatação de tabela e texto, embora o valor final normalmente esteja somado.
+
+### `valor_do_fgts`
+
+Esse campo possui labels com valor já consolidado e também labels em linhas de tabelas com várias colunas, mais custosas de extrair. Além disso, FGTS pode aparecer em diferentes trechos do PDF, aumentando risco de falso positivo.
+
+O alvo principal é o campo `FGTS` comum nos PDFs do PJe-Calc Cidadão. Porém, há casos em que:
+
+- o valor consolidado aparece em tabela de coluna única;
+- o label correto é `Total` (Laudo Pericial);
+- o total está em tabela com múltiplas colunas sob o label `TOTAL DEVIDO AO AUTOR`.
+
+### `contribuicao_social_sobre_salarios_devido`
+
+Possui casos de borda mais simples, mas vale separar a regra. Os valores costumam estar na mesma linha do rótulo; em alguns casos, o valor vem dividido entre reclamado e reclamada, exigindo soma.
+
+### `valor_do_irrf`
+
+Também tem casos de borda mais simples, mas há ocorrências em blocos de demonstrativo e com labels diferentes.
 
 
 
