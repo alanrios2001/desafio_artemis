@@ -1,0 +1,3 @@
+{"case_name":"contribuicao_social_total_direto","text":"TOTAL DA CONTRIBUICAO PREVIDENCIARIA 180.882,94","expected":"180882.94"}
+{"case_name":"contribuicao_social_soma_inss_reclamante_reclamada","text":"ANEXO 10 INSS DO RECLAMANTE 853,51\nINSS DO RECLAMADO 166.436,59\nRESUMO","expected":"167290.10"}
+{"case_name":"contribuicao_social_sem_parcela_reclamada","text":"INSS PARTE DA RECLAMANTE 853,51\nSEM OUTRAS INFORMACOES","expected":null}

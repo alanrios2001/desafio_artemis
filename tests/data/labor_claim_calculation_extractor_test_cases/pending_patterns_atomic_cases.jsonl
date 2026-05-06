@@ -1,0 +1,4 @@
+{"case_name":"label_com_valor_proximo","text":"LIQUIDO DEVIDO AO RECLAMANTE R$ 1.234,56","field":"liquido_devido_ao_reclamante","should_match":true}
+{"case_name":"label_sem_valor_proximo","text":"LIQUIDO DEVIDO AO RECLAMANTE XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX R$ 1.234,56","field":"liquido_devido_ao_reclamante","should_match":false}
+{"case_name":"label_de_irrf_com_valor","text":"RELATORIO\nVALOR TOTAL DO IRRF 180.583,84\nFIM","field":"valor_de_irrf","should_match":true}
+

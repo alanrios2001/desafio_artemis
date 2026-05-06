@@ -1,0 +1,5 @@
+{"case_name":"total_devido_reclamado_linha_direta","field_name":"total_devido_pelo_reclamado","text":"DEMONSTRATIVO FINAL\nTOTAL DEVIDO PELO RECLAMADO 2.013.266,83\nENCERRAMENTO","expected":"2013266.83"}
+{"case_name":"total_devido_reclamada_com_valor_antes_do_label","field_name":"total_devido_pelo_reclamado","text":"2.013.266,83 TOTAL DEVIDO PELA RECLAMADA","expected":"2013266.83"}
+{"case_name":"credito_liquido_linha_direta","field_name":"liquido_devido_ao_reclamante","text":"180.583,84)\nCREDITO LIQUIDO 1.496.723,31\nANEXO 10 INSS-SEGURADO","expected":"1496723.31"}
+{"case_name":"liquido_ausente_no_texto","field_name":"liquido_devido_ao_reclamante","text":"Resumo de calculos sem o campo de liquido nesta pagina","expected":null}
+

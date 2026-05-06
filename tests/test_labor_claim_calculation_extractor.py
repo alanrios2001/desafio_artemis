@@ -20,27 +20,77 @@ class TestLaborClaimCalculationExtractor(unittest.TestCase):
         )
         self.extractor = LaborClaimCalculationExtractor()
 
-    def test_extract_honorarios_from_demonstrativo_xhtml_normalized(self):
-        text = (
-            "Demonstrativo de Multas / Indenizacoes Nome: MULTAS / INDENIZACOES DEVIDAS AO RECLAMANTE "
-            "Total Demonstrativo de Honorarios Nome: HONORARIOS DEVIDOS PELO RECLAMADO "
-            "15/12/2023 3.500,00 1,019223195 3.567,28 - 3.567,28 HONORARIOS PERICIAIS - ENGENHEIRO "
-            "30/04/2025 30.385,04 15,00 % 4.557,76 HONORARIOS ADVOCATICIOS RICARDO ARAUJO ALVES "
-            "8.125,04 Total Demonstrativo de Imposto de Renda"
-        )
+    def _read_jsonl(self, file_name: str) -> list[dict]:
+        with open(self.data_path / file_name, "r", encoding="utf-8-sig") as f:
+            return [json.loads(line) for line in f if line.strip()]
 
-        extracted = self.extractor._extract_honorarios_demonstrativo_total(text)
+    @staticmethod
+    def _to_decimal(value: str | None) -> Decimal | None:
+        return Decimal(value) if value is not None else None
 
-        self.assertEqual(Decimal("4557.76"), extracted)
+    def test_atomic_honorarios_extraction_cases(self):
+        test_cases = self._read_jsonl("honorarios_atomic_cases.jsonl")
+
+        for item in test_cases:
+            with self.subTest(case=item["case_name"]):
+                extracted = self.extractor._extract_honorarios_demonstrativo_total(
+                    item["text"]
+                )
+                self.assertEqual(self._to_decimal(item["expected"]), extracted)
+
+    def test_atomic_irrf_extraction_cases(self):
+        test_cases = self._read_jsonl("irrf_atomic_cases.jsonl")
+
+        for item in test_cases:
+            with self.subTest(case=item["case_name"]):
+                extracted = self.extractor._extract_irrf_field_value(item["text"])
+                self.assertEqual(self._to_decimal(item["expected"]), extracted)
+
+    def test_atomic_fgts_extraction_cases(self):
+        test_cases = self._read_jsonl("fgts_atomic_cases.jsonl")
+
+        for item in test_cases:
+            with self.subTest(case=item["case_name"]):
+                extracted = self.extractor._extract_fgts_field_value(item["text"])
+                self.assertEqual(self._to_decimal(item["expected"]), extracted)
+
+    def test_atomic_contribuicao_social_extraction_cases(self):
+        test_cases = self._read_jsonl("contribuicao_social_atomic_cases.jsonl")
+
+        for item in test_cases:
+            with self.subTest(case=item["case_name"]):
+                extracted = self.extractor._extract_contribuicao_social_value(
+                    item["text"]
+                )
+                self.assertEqual(self._to_decimal(item["expected"]), extracted)
+
+    def test_atomic_field_value_extraction_cases(self):
+        test_cases = self._read_jsonl("field_value_atomic_cases.jsonl")
+
+        for item in test_cases:
+            with self.subTest(case=item["case_name"]):
+                extracted = self.extractor._extract_field_value_from_text(
+                    item["text"], item["field_name"]
+                )
+                self.assertEqual(self._to_decimal(item["expected"]), extracted)
+
+    def test_atomic_pending_pattern_matching_cases(self):
+        test_cases = self._read_jsonl("pending_patterns_atomic_cases.jsonl")
+
+        for item in test_cases:
+            with self.subTest(case=item["case_name"]):
+                _, matched_fields = self.extractor._get_pending_patterns_and_matches(
+                    LaborClaimState(), item["text"]
+                )
+
+                if item["should_match"]:
+                    self.assertIn(item["field"], matched_fields)
+                else:
+                    self.assertNotIn(item["field"], matched_fields)
 
     def test_full_extraction(self):
         pdf_files_path = self.data_path / "Documentos"
-        with open(
-            self.data_path / "full_extraction_test_cases.jsonl",
-            "r",
-            encoding="utf-8-sig",
-        ) as f:
-            test_cases = [json.loads(line) for line in f]
+        test_cases = self._read_jsonl("full_extraction_test_cases.jsonl")
 
         for item in test_cases:
             file = pdf_files_path / item["pdf_name"]
@@ -57,35 +107,3 @@ class TestLaborClaimCalculationExtractor(unittest.TestCase):
 
             for key, expected_value in expected_data.items():
                 self.assertEqual(expected_value, extracted_data[key])
-
-    def test_extract_honorarios_sum_reclamante_and_reclamado_blocks(self):
-        text = (
-            "Demonstrativo de Honorarios Nome: HONORARIOS DEVIDOS PELO RECLAMANTE "
-            "06/06/2022 28.780,54 1,001146708 28.813,54 11.420,53 40.234,07 HONORARIOS DE SUCUMBENCIA "
-            "PATRONO DA RECLAMADA 40.234,07 Total Nome: HONORARIOS DEVIDOS PELO RECLAMADO "
-            "10/01/2024 3.500,00 1,200800000 4.202,80 - 4.202,80 HONORARIOS PERICIAIS - ENGENHEIRO "
-            "01/10/2025 1.117.993,92 15,00 % 167.699,09 HONORARIOS DE SUCUMBENCIA PATRONO DO RECLAMANTE "
-            "171.901,89 Total Demonstrativo de Imposto de Renda"
-        )
-
-        extracted = self.extractor._extract_honorarios_demonstrativo_total(text)
-
-        self.assertEqual(Decimal("207933.16"), extracted)
-
-    def test_pending_patterns_match_only_with_nearby_money(self):
-        text = "LIQUIDO DEVIDO AO RECLAMANTE R$ 1.234,56"
-
-        _, matched_fields = self.extractor._get_pending_patterns_and_matches(
-            LaborClaimState(), text
-        )
-
-        self.assertIn("liquido_devido_ao_reclamante", matched_fields)
-
-    def test_pending_patterns_ignore_label_without_nearby_money(self):
-        far_apart_text = "LIQUIDO DEVIDO AO RECLAMANTE " + ("X" * 170) + " R$ 1.234,56"
-
-        _, matched_fields = self.extractor._get_pending_patterns_and_matches(
-            LaborClaimState(), far_apart_text
-        )
-
-        self.assertNotIn("liquido_devido_ao_reclamante", matched_fields)
