@@ -409,14 +409,11 @@ class LaborClaimCalculationExtractor:
             non_empty_lines = [line for line in block.splitlines() if line.strip()]
 
             if len(non_empty_lines) > 1:
-                for raw_line in non_empty_lines:
-                    line_text = re.sub(r"[|*]", " ", raw_line)
-                    line_text = re.sub(r"\s+", " ", line_text).strip()
-
+                for line_text in non_empty_lines:
                     if not target_re.search(line_text):
                         continue
 
-                    cells = self._extract_line_cells(raw_line)
+                    cells = self._extract_line_cells(line_text)
                     value = (
                         self._extract_last_money_from_cells(cells)
                         if cells
@@ -433,12 +430,9 @@ class LaborClaimCalculationExtractor:
             if found_in_block:
                 continue
 
-            sanitized_block = re.sub(r"[|*]", " ", block)
-            sanitized_block = re.sub(r"\s+", " ", sanitized_block).strip()
-
-            for target_match in target_re.finditer(sanitized_block):
+            for target_match in target_re.finditer(block):
                 value = self._extract_money_closest_to_span(
-                    sanitized_block, target_match.start(), target_match.end()
+                    block, target_match.start(), target_match.end()
                 )
                 if value is None:
                     continue
@@ -494,9 +488,7 @@ class LaborClaimCalculationExtractor:
             re.compile(pattern, re.IGNORECASE) for pattern in label_patterns
         ]
 
-        for raw_line in text.splitlines():
-            line = re.sub(r"[|*]", " ", raw_line)
-            line = re.sub(r"\s+", " ", line).strip()
+        for line in text.splitlines():
             if not line:
                 continue
 
@@ -595,12 +587,7 @@ class LaborClaimCalculationExtractor:
         :param text: Texto normalizado da página ou tabela.
         :return: Lista de blocos do demonstrativo de honorários.
         """
-        cleaned_text = re.sub(r"[|*]", " ", text)
-        cleaned_text = re.sub(r"[ \t\r\f\v]+", " ", cleaned_text).strip()
-
-        if not re.search(
-            r"DEMONSTRATIVO\s+DE\s+HONORARIOS", cleaned_text, re.IGNORECASE
-        ):
+        if not re.search(r"DEMONSTRATIVO\s+DE\s+HONORARIOS", text, re.IGNORECASE):
             return []
 
         demonstrativo_re = re.compile(
@@ -613,7 +600,7 @@ class LaborClaimCalculationExtractor:
         )
 
         blocks: list[str] = []
-        for demonstrativo_match in demonstrativo_re.finditer(cleaned_text):
+        for demonstrativo_match in demonstrativo_re.finditer(text):
             demonstrativo_body = demonstrativo_match.group("body")
             for block_match in due_block_re.finditer(demonstrativo_body):
                 blocks.append(block_match.group("body"))
@@ -695,8 +682,8 @@ class LaborClaimCalculationExtractor:
         if not line.startswith("|") or self.separator_re.match(line):
             return []
 
-        cells = [re.sub(r"<[^>]+>", " ", c).strip() for c in line.strip("|").split("|")]
-        return [re.sub(r"\s+", " ", c).strip() for c in cells]
+        cells = [c for c in line.strip("|").split("|")]
+        return [c for c in cells]
 
     def _extract_fgts_field_value(self, text: str) -> Decimal | None:
         """
@@ -831,10 +818,7 @@ class LaborClaimCalculationExtractor:
         if not re.search(r"FGTS", text, re.IGNORECASE):
             return None
 
-        for raw_line in text.splitlines():
-            line = re.sub(r"[|*]", " ", raw_line)
-            line = re.sub(r"\s+", " ", line).strip()
-
+        for line in text.splitlines():
             if not re.search(r"ANEXO\s+IX", line, re.IGNORECASE):
                 continue
 
@@ -880,9 +864,9 @@ class LaborClaimCalculationExtractor:
             if not money_matches:
                 continue
 
-            label_without_values = re.sub(MONEY_RE, " ", line, flags=re.IGNORECASE)
-            label_without_values = re.sub(r"[|*:]", " ", label_without_values)
-            label_without_values = re.sub(r"\s+", " ", label_without_values).strip()
+            label_without_values = re.sub(
+                MONEY_RE, " ", line, flags=re.IGNORECASE
+            ).strip()
 
             if not re.fullmatch(r"FGTS", label_without_values, flags=re.IGNORECASE):
                 continue
@@ -915,10 +899,7 @@ class LaborClaimCalculationExtractor:
             r"\bTOTAL\s+DEVIDO\s+AO\s+AUTOR\b", re.IGNORECASE
         )
 
-        for raw_line in text.splitlines():
-            line = re.sub(r"[|*]", " ", raw_line)
-            line = re.sub(r"\s+", " ", line).strip()
-
+        for line in text.splitlines():
             if not total_devido_ao_autor_re.search(line):
                 continue
 
@@ -1049,6 +1030,6 @@ if __name__ == "__main__":
                 continue
             print(extractor.extract(pdf_file))
 
-    print(extractor.extract(data_path / "0021118-39.2018.5.04.0010.pdf"))
+    # print(extractor.extract(data_path / "0021118-39.2018.5.04.0010.pdf"))
 
-    # run_all_pdfs()
+    run_all_pdfs()
