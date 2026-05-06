@@ -1,5 +1,2 @@
 # Ativa os logs de Debug
 DEBUG = false
-DEBUG_ALCHEMY = false
-# Integração com grupo no slack
-SLACK_WEBHOOK="secret_url"
