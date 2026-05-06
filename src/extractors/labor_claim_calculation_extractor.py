@@ -39,7 +39,7 @@ ALL_FIELDS: tuple[FieldName, ...] = (
     "valor_do_fgts",
 )
 
-LaborClaimInfo: TypeAlias = dict[str, Decimal]
+LaborClaimInfo: TypeAlias = dict[str, Decimal | None]
 
 
 @dataclass(slots=True)
@@ -60,15 +60,10 @@ class LaborClaimState:
     def missing_fields(self) -> list[FieldName]:
         return [field for field in ALL_FIELDS if not self.has(field)]
 
-    def to_dict(self, default: Decimal | None = None) -> LaborClaimInfo:
+    def to_dict(self) -> LaborClaimInfo:
         info: LaborClaimInfo = {}
         for field in ALL_FIELDS:
-            value = getattr(self, field)
-            if value is None:
-                if default is None:
-                    continue
-                value = default
-            info[field] = value
+            info[field] = getattr(self, field)
         return info
 
 
@@ -192,13 +187,11 @@ class LaborClaimCalculationExtractor:
                     normalized_text, labor_claim_state, pattern_matches
                 )
 
-                # recalcula os campos ainda pendentes na página atual
-                _, remaining_pattern_matches = self._get_pending_patterns_and_matches(
-                    labor_claim_state, normalized_text
-                )
-
                 # usa tabelas apenas como fallback para o que ainda não foi encontrado
-                if remaining_pattern_matches:
+                if (pending_and_matches_result := self._get_pending_patterns_and_matches(
+                    labor_claim_state, normalized_text
+                )):
+                    _, remaining_pattern_matches = pending_and_matches_result
                     try:
                         page_tables = [
                             table.to_markdown() for table in page.find_tables()
@@ -214,11 +207,10 @@ class LaborClaimCalculationExtractor:
 
             remaining_fields = labor_claim_state.missing_fields()
             if remaining_fields:
-                for field in remaining_fields:
-                    labor_claim_state.set(field, Decimal(0))
                 logger.warning(
                     f"[LaborClaimCalculationExtractor][extract] PDF:{pdf_name}\n\t"
-                    "Extração concluída, mas os seguintes campos não foram encontrados: "
+                    "Extração concluída, mas os seguintes campos não foram encontrados "
+                    "(retornados como None): "
                     f"{', '.join(remaining_fields)}."
                 )
 
