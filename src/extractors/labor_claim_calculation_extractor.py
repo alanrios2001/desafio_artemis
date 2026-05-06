@@ -1,6 +1,5 @@
 import re
 import fitz
-import pymupdf.layout  # noqa: F401
 
 from dataclasses import dataclass
 from decimal import Decimal
@@ -69,8 +68,8 @@ class LaborClaimState:
 
 class LaborClaimCalculationExtractor:
     def __init__(self) -> None:
+        self.page_chunk_size = 3
         self.label_money_window = 150
-        self.separator_re = re.compile(r"^\|\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?$")
         # patterns para extração de cada campo, novos casos podem ser adicionados aqui para melhorar a cobertura,
         # buscando variações comuns de labels encontrados nos PDFs
         self.field_pattern_map: dict[FieldName, str] = {
@@ -86,7 +85,6 @@ class LaborClaimCalculationExtractor:
                 r"(?:CONTRIBUICAO\s+SOCIAL\s+SOBRE\s+SALARIOS\s+DEVID[OA]S?"
                 r"|TOTAL\s+DA\s+CONTRIBUICAO\s+PREVIDENCIARIA"
                 r"|INSS\s+COTA-EMPREGADOR"
-                r"|INSS\s+PARTE\s+DA\s+RECLAMAD[AO]"
                 r"|INSS\s+(?:DO|DA|PARTE\s+DO|PARTE\s+DA)\s+RECLAMANT[EA]"
                 r"|INSS\s+(?:DO|DA|PARTE\s+DO|PARTE\s+DA)\s+RECLAMAD[AO])"
             ),
@@ -109,7 +107,7 @@ class LaborClaimCalculationExtractor:
                 r"|IMPOSTO\s+DE\s+RENDA"
                 r"|DEMONSTRATIVO\s+DE\s+IMPOSTO\s+DE\s+RENDA)"
             ),
-            "valor_do_fgts": (r"(?:FGTS" r"|DIFERENCA\s+DE\s+FGTS\s+DO\s+CONTRATO)"),
+            "valor_do_fgts": r"FGTS",
         }
         self.special_field_extractors: dict[
             FieldName, Callable[[str], Decimal | None]
@@ -193,54 +191,19 @@ class LaborClaimCalculationExtractor:
         with fitz.open(pdf_path) as document:
             document = self._reorder_document_pages(document)
             total_pages = len(document)
-            for chunk_start in range(0, total_pages, 3):
+            for chunk_start in range(0, total_pages, self.page_chunk_size):
                 # Processa blocos curtos para limitar custo de leitura/normalização por iteração.
-                chunk_end = min(chunk_start + 3, total_pages)
+                chunk_end = min(chunk_start + self.page_chunk_size, total_pages)
                 pages_chunk = [document[i] for i in range(chunk_start, chunk_end)]
-
-                normalized_parts: list[str] = []
-                for page in pages_chunk:
-                    text = page.get_text("xhtml", sort=True)
-                    normalized_text = normalize_html_text(text)
-                    if normalized_text:
-                        normalized_parts.append(normalized_text)
-
-                if not normalized_parts:
-                    logger.debug(
-                        f"[LaborClaimCalculationExtractor][extract] PDF:{pdf_name}\n\t"
-                        f"Páginas {chunk_start + 1}-{chunk_end} sem texto extraído. "
-                        "Pulando para o próximo bloco."
-                    )
-                    continue
-
-                normalized_text = "\n".join(normalized_parts)
-
-                # melhora eficiência tentando apenas campos pendentes com label + valor monetário próximo
-                pending_patterns, pattern_matches = (
-                    self._get_pending_patterns_and_matches(
-                        labor_claim_state, normalized_text
-                    )
+                should_stop = self._process_pages_chunk(
+                    pdf_name=pdf_name,
+                    chunk_start=chunk_start,
+                    chunk_end=chunk_end,
+                    pages_chunk=pages_chunk,
+                    labor_claim_state=labor_claim_state,
                 )
-
-                if not pending_patterns:
-                    logger.info(
-                        f"[LaborClaimCalculationExtractor][extract] PDF:{pdf_name}\n\t"
-                        f"Extração concluída, interrompi na página {chunk_end}."
-                    )
+                if should_stop:
                     break
-
-                if not pattern_matches:
-                    logger.debug(
-                        f"[LaborClaimCalculationExtractor][extract] PDF:{pdf_name}\n\t"
-                        f"Bloco de páginas {chunk_start + 1}-{chunk_end} não contém labels pendentes. "
-                        "Pulando para o próximo bloco."
-                    )
-                    continue
-
-                # tenta extrair primeiro pelo texto HTML/XHTML limpo da página
-                self._extract_fields_from_text(
-                    normalized_text, labor_claim_state, pattern_matches
-                )
 
             remaining_fields = labor_claim_state.missing_fields()
             if remaining_fields:
@@ -252,6 +215,71 @@ class LaborClaimCalculationExtractor:
                 )
 
         return labor_claim_state.to_dict()
+
+    def _process_pages_chunk(
+        self,
+        pdf_name: str,
+        chunk_start: int,
+        chunk_end: int,
+        pages_chunk: list[Page],
+        labor_claim_state: LaborClaimState,
+    ) -> bool:
+        """
+        Processa um bloco de páginas e atualiza o estado acumulado da extração.
+
+        :return: True quando a extração pode ser encerrada antecipadamente.
+        """
+        normalized_text = self._normalize_pages_chunk_text(pages_chunk)
+
+        if not normalized_text:
+            logger.debug(
+                f"[LaborClaimCalculationExtractor][extract] PDF:{pdf_name}\n\t"
+                f"Páginas {chunk_start + 1}-{chunk_end} sem texto extraído. "
+                "Pulando para o próximo bloco."
+            )
+            return False
+
+        # Melhora eficiência tentando apenas campos pendentes com label + valor monetário próximo.
+        pending_patterns, pattern_matches = self._get_pending_patterns_and_matches(
+            labor_claim_state, normalized_text
+        )
+
+        if not pending_patterns:
+            logger.info(
+                f"[LaborClaimCalculationExtractor][extract] PDF:{pdf_name}\n\t"
+                f"Extração concluída, interrompi na página {chunk_end}."
+            )
+            return True
+
+        if not pattern_matches:
+            logger.debug(
+                f"[LaborClaimCalculationExtractor][extract] PDF:{pdf_name}\n\t"
+                f"Bloco de páginas {chunk_start + 1}-{chunk_end} não contém labels pendentes. "
+                "Pulando para o próximo bloco."
+            )
+            return False
+
+        # Tenta extrair primeiro pelo texto HTML/XHTML limpo da página.
+        self._extract_fields_from_text(
+            normalized_text, labor_claim_state, pattern_matches
+        )
+        return False
+
+    @staticmethod
+    def _normalize_pages_chunk_text(pages_chunk: list[Page]) -> str:
+        """
+        Concatena texto XHTML normalizado de um bloco de páginas.
+
+        :return: Texto normalizado do bloco, vazio quando não houver conteúdo útil.
+        """
+        normalized_parts: list[str] = []
+        for page in pages_chunk:
+            text = page.get_text("xhtml", sort=True)
+            normalized_text = normalize_html_text(text)
+            if normalized_text:
+                normalized_parts.append(normalized_text)
+
+        return "\n".join(normalized_parts)
 
     @staticmethod
     def _has_money_near_label(text: str, label_pattern: str, window: int) -> bool:
@@ -308,7 +336,7 @@ class LaborClaimCalculationExtractor:
         honorários advocatícios/sucumbenciais. Isso evita capturar honorários
         periciais ou totais gerais sem discriminação.
 
-        :param text: Texto normalizado da página (xhtml) ou tabela Markdown.
+        :param text: Texto normalizado da página.
         :return: Soma dos honorários devidos ao advogado, ou None se não encontrado.
         """
         blocks = self._extract_honorarios_due_blocks(text)
@@ -323,33 +351,7 @@ class LaborClaimCalculationExtractor:
         )
 
         for block in blocks:
-            found_in_block = False
-            non_empty_lines = [line for line in block.splitlines() if line.strip()]
-
-            if len(non_empty_lines) > 1:
-                # Prioriza leitura por linha/célula quando há estrutura tabular visível.
-                for line_text in non_empty_lines:
-                    if not target_re.search(line_text):
-                        continue
-
-                    cells = self._extract_line_cells(line_text)
-                    value = (
-                        self._extract_last_money_from_cells(cells)
-                        if cells
-                        else self._extract_last_money_from_line(line_text)
-                    )
-
-                    if value is None:
-                        continue
-
-                    total += value
-                    found_value = True
-                    found_in_block = True
-
-            if found_in_block:
-                continue
-
-            # Fallback para texto corrido: usa proximidade entre label e valor monetário.
+            # Usa proximidade entre label e valor monetário no texto corrido.
             for target_match in target_re.finditer(block):
                 value = self._extract_money_closest_to_span(
                     block, target_match.start(), target_match.end()
@@ -374,7 +376,7 @@ class LaborClaimCalculationExtractor:
         - HONORARIOS DE SUCUMBENCIA (10%) ...
         - - da Reclamante ... / - da Reclamada ...
 
-        :param text: Texto normalizado da página ou tabela.
+        :param text: Texto normalizado da página.
         :return: Soma dos honorários identificados, ou None.
         """
         primary_total = self._sum_money_closest_to_patterns(
@@ -398,7 +400,7 @@ class LaborClaimCalculationExtractor:
         """
         Soma valores monetários mais próximos de labels em cada linha.
 
-        :param text: Texto normalizado da página ou tabela.
+        :param text: Texto normalizado da página.
         :param label_patterns: Regex de labels que apontam para valores alvo.
         :return: Soma dos valores encontrados, ou None.
         """
@@ -462,7 +464,7 @@ class LaborClaimCalculationExtractor:
         """
         Extrai contribuição social via total explícito ou soma INSS reclamante+reclamada.
 
-        :param text: Texto normalizado da página ou tabela.
+        :param text: Texto normalizado da página.
         :return: Valor da contribuição social, ou None.
         """
         direct_match = self._extract_money_on_same_line_as_label(
@@ -485,7 +487,7 @@ class LaborClaimCalculationExtractor:
         """
         Soma INSS da parte reclamante e da parte reclamada quando aparecem separados.
 
-        :param text: Texto normalizado da página ou tabela.
+        :param text: Texto normalizado da página.
         :return: Soma das parcelas encontradas, ou None.
         """
         inss_reclamante = self._extract_money_on_same_line_as_label(
@@ -508,10 +510,10 @@ class LaborClaimCalculationExtractor:
         """
         Recorta blocos do Demonstrativo de Honorários devidos pelo reclamado/reclamante.
 
-        O recorte é tolerante a texto corrido (xhtml normalizado) e a linhas de
-        tabela Markdown, evitando depender exclusivamente de quebras de linha.
+        O recorte é tolerante a texto corrido (xhtml normalizado), evitando
+        depender exclusivamente de quebras de linha.
 
-        :param text: Texto normalizado da página ou tabela.
+        :param text: Texto normalizado da página.
         :return: Lista de blocos do demonstrativo de honorários.
         """
         if not re.search(r"DEMONSTRATIVO\s+DE\s+HONORARIOS", text, re.IGNORECASE):
@@ -542,8 +544,7 @@ class LaborClaimCalculationExtractor:
         """
         Retorna o valor monetário mais próximo de um intervalo de texto.
 
-        Útil para linhas longas/tabelas em que o label e o valor não estão em
-        células separadas de forma confiável.
+        Útil para linhas longas em que o label e o valor não estão próximos.
 
         :param text: Texto no qual será feita a busca por valores monetários.
         :param span_start: Índice inicial do label no texto.
@@ -569,82 +570,70 @@ class LaborClaimCalculationExtractor:
         closest_after = min(after_matches, key=lambda match: match.start() - span_end)
         return to_decimal(closest_after.group(0))
 
-    @staticmethod
-    def _extract_last_money_from_line(line: str) -> Decimal | None:
-        """
-        Extrai o último valor monetário de uma linha.
-
-        Em linhas como:
-        30/04/2025 30.385,04 15,00 % 4.557,76 HONORARIOS ADVOCATICIOS ...
-
-        o último valor monetário é o valor calculado dos honorários.
-
-        :param line: Linha de texto.
-        :return: Último valor monetário da linha, ou None.
-        """
-        money_matches = list(re.finditer(MONEY_RE, line, re.IGNORECASE))
-        if not money_matches:
-            return None
-
-        # Para linhas de cálculo, o último valor tende a ser o total calculado.
-        return to_decimal(money_matches[-1].group(0))
-
-    @staticmethod
-    def _extract_last_money_from_cells(cells: list[str]) -> Decimal | None:
-        """
-        Extrai o último valor monetário encontrado nas células de uma linha Markdown.
-        :param cells: Células extraídas de uma linha de tabela.
-        :return: Último valor monetário encontrado, ou None.
-        """
-        for cell in reversed(cells):
-            # Varre da direita para a esquerda para capturar totais normalmente posicionados no fim.
-            money_match = re.search(MONEY_RE, cell, re.IGNORECASE)
-            if money_match:
-                return to_decimal(money_match.group(0))
-
-        return None
-
-    def _extract_line_cells(self, raw_line: str) -> list[str]:
-        """
-        Extrai células de uma linha Markdown de tabela.
-
-        :param raw_line: Linha bruta da tabela (ex.: "| A | B |" ou linha separadora).
-        :return: Lista de células quando a linha representa dados; lista vazia para
-            linhas não tabulares ou separadores de cabeçalho.
-        """
-        line = raw_line.strip()
-        if not line.startswith("|") or self.separator_re.match(line):
-            return []
-
-        cells = [c for c in line.strip("|").split("|")]
-        return [c for c in cells]
-
     def _extract_fgts_field_value(self, text: str) -> Decimal | None:
         """
         Extrai o valor final de FGTS.
 
         A ordem de prioridade é:
         1. linha cujo label seja exatamente 'FGTS';
-        2. linha 'TOTAL DEVIDO AO AUTOR', usando a coluna FGTS.
+        2. sequência "TOTAL DEVIDO AO AUTOR" quando há evidência de FGTS/JUROS FGTS;
+        3. total consolidado do Anexo IX.
 
         Isso evita capturar linhas intermediárias como:
         - FGTS 8% 6.886,94 15.650,90 8.763,96
         - MULTA SOBRE FGTS 40% 2.607,33 5.970,54 3.363,21
         - DIFERENCA DE FGTS DO CONTRATO 0,00 0,00 0,00 2.259,62 0,00 2.259,62
 
-        :param text: Texto normalizado da página ou tabela.
+        :param text: Texto normalizado da página.
         :return: Valor de FGTS convertido para Decimal, ou None se não for encontrado.
         """
         if (exact_fgts_value := self._extract_exact_fgts_line_value(text)) is not None:
             # Melhor caso: label exato "FGTS" evita confusão com linhas intermediárias.
             return exact_fgts_value
 
-        total_devido_ao_autor_fgts = self._extract_fgts_from_total_devido_ao_autor(text)
-        if total_devido_ao_autor_fgts is not None:
+        if (
+            total_devido_ao_autor_fgts := self._extract_fgts_from_total_devido_ao_autor_sequence(
+                text
+            )
+        ) is not None:
             return total_devido_ao_autor_fgts
 
         # Último fallback para demonstrativos consolidados (Anexo IX).
         return self._extract_fgts_from_anexo_ix_total(text)
+
+    @staticmethod
+    def _extract_fgts_from_total_devido_ao_autor_sequence(text: str) -> Decimal | None:
+        """
+        Extrai FGTS de sequências textuais com "TOTAL DEVIDO AO AUTOR".
+
+        Alguns layouts trazem um cabeçalho com FGTS/JUROS FGTS e, na linha
+        de total, uma sequência de valores monetários. Nesses casos, usa o
+        4o valor monetário da linha de total como candidato a FGTS.
+
+        :param text: Texto normalizado da página.
+        :return: Valor de FGTS extraído da sequência, ou None.
+        """
+        if not re.search(r"\bFGTS\b", text, re.IGNORECASE):
+            return None
+
+        if not re.search(r"\bJUROS\s+FGTS\b", text, re.IGNORECASE):
+            return None
+
+        total_devido_ao_autor_re = re.compile(
+            r"\bTOTAL\s+DEVIDO\s+AO\s+AUTOR\b", re.IGNORECASE
+        )
+
+        for line in text.splitlines():
+            if not total_devido_ao_autor_re.search(line):
+                continue
+
+            money_matches = list(re.finditer(MONEY_RE, line, re.IGNORECASE))
+            if len(money_matches) < 6:
+                continue
+
+            return to_decimal(money_matches[3].group(0))
+
+        return None
 
     def _extract_irrf_field_value(self, text: str) -> Decimal | None:
         """
@@ -656,7 +645,7 @@ class LaborClaimCalculationExtractor:
         2. Campo "TOTAL DEVIDO" dentro do bloco "Demonstrativo de Imposto de Renda".
         3. Label genérico "IMPOSTO DE RENDA" com valor na mesma linha.
 
-        :param text: Texto normalizado da página ou tabela.
+        :param text: Texto normalizado da página.
         :return: Valor de IRRF em Decimal (sempre absoluto), ou None.
         """
 
@@ -716,7 +705,7 @@ class LaborClaimCalculationExtractor:
         """
         Extrai IRRF pelo "TOTAL DEVIDO" dentro do bloco Demonstrativo de Imposto de Renda.
 
-        :param text: Texto normalizado da página ou tabela.
+        :param text: Texto normalizado da página.
         :return: Valor do total devido do demonstrativo, ou None.
         """
         demonstrativo_block_re = re.compile(
@@ -747,7 +736,7 @@ class LaborClaimCalculationExtractor:
         Exemplo:
         - Selic Simples 15,93% 68.596,52 Total 499.208,72
 
-        :param text: Texto normalizado da página ou tabela.
+        :param text: Texto normalizado da página.
         :return: Valor total do anexo IX, ou None.
         """
         if not re.search(r"ANEXO\s+IX", text, re.IGNORECASE):
@@ -791,7 +780,7 @@ class LaborClaimCalculationExtractor:
         - FGTS 8% 6.886,94
         - MULTA SOBRE FGTS 40% 2.607,33
 
-        :param text: Texto normalizado da página ou tabela.
+        :param text: Texto normalizado da página.
         :return: Valor de FGTS convertido para Decimal, ou None se não for encontrado.
         """
         for raw_line in text.splitlines():
@@ -811,46 +800,6 @@ class LaborClaimCalculationExtractor:
                 continue
 
             return to_decimal(money_matches[0].group(0))
-
-        return None
-
-    @staticmethod
-    def _extract_fgts_from_total_devido_ao_autor(text: str) -> Decimal | None:
-        """
-        Extrai o FGTS em tabelas que possuem colunas monetárias, como:
-
-        PEDIDOS | VLR. PRINC | VLR. CORRECAO | JUROS | FGTS | JUROS FGTS | TOTAL
-        TOTAL DEVIDO AO AUTOR 43.945,62 5.003,02 16.888,37 5.887,51 2.041,93 73.766,45
-
-        Nesse layout, o valor correto de FGTS é o 4º valor monetário da linha
-        'TOTAL DEVIDO AO AUTOR', pois corresponde à coluna FGTS.
-
-        :param text: Texto normalizado da página ou tabela.
-        :return: Valor da coluna FGTS na linha total, ou None se não for encontrado.
-        """
-        if not re.search(r"\bFGTS\b", text, re.IGNORECASE):
-            return None
-
-        if not re.search(r"\bJUROS\s+FGTS\b", text, re.IGNORECASE):
-            return None
-
-        total_devido_ao_autor_re = re.compile(
-            r"\bTOTAL\s+DEVIDO\s+AO\s+AUTOR\b", re.IGNORECASE
-        )
-
-        for line in text.splitlines():
-            if not total_devido_ao_autor_re.search(line):
-                continue
-
-            money_matches = list(re.finditer(MONEY_RE, line, re.IGNORECASE))
-
-            # Esperado:
-            # VLR. PRINC, VLR. CORRECAO, JUROS, FGTS, JUROS FGTS, TOTAL
-            if len(money_matches) < 6:
-                continue
-
-            fgts_match = money_matches[3]
-            return to_decimal(fgts_match.group(0))
 
         return None
 
@@ -917,7 +866,7 @@ class LaborClaimCalculationExtractor:
         A busca aceita valor depois ou antes do label na mesma linha, mas descarta
         candidatos em outras linhas para evitar capturar valores de campos vizinhos.
 
-        :param text: Texto normalizado da página ou tabela.
+        :param text: Texto normalizado da página.
         :param field_pattern: Regex usado para localizar o label do campo.
         :return: Valor monetário convertido para Decimal, ou None se nada for encontrado.
         """
@@ -972,4 +921,4 @@ if __name__ == "__main__":
     end = time.time()
     print(f"Tempo de extração: {end - start:.2f} segundos")
 
-    # run_all_pdfs()
+    run_all_pdfs()

@@ -33,24 +33,6 @@ class TestLaborClaimCalculationExtractor(unittest.TestCase):
 
         self.assertEqual(Decimal("4557.76"), extracted)
 
-    def test_extract_honorarios_from_demonstrativo_table_normalized(self):
-        table_text = "\n".join(
-            [
-                "|Demonstrativo de Honorarios|Col2|Col3|Col4|Col5|Col6|Col7|Col8|",
-                "|---|---|---|---|---|---|---|---|",
-                "|** Nome: HONORARIOS DEVIDOS PELO RECLAMADO**|** Nome: HONORARIOS DEVIDOS PELO RECLAMADO**|",
-                "|15/12/2023|HONORARIOS PERICIAIS - ENGENHEIRO|LAUDO EMPRESTADO|3.500,00|1,019223195|3.567,28"
-                "|-|3.567,28|",
-                "|30/04/2025|HONORARIOS ADVOCATICIOS|RICARDO ARAUJO ALVES|30.385,04|30.385,04|15,00 %|15,00 %"
-                "|4.557,76|",
-                "|**Total**|**Total**|**Total**|**Total**|**Total**|**Total**|**Total**|**8.125,04**|",
-            ]
-        )
-
-        extracted = self.extractor._extract_honorarios_demonstrativo_total(table_text)
-
-        self.assertEqual(Decimal("4557.76"), extracted)
-
     def test_full_extraction(self):
         pdf_files_path = self.data_path / "Documentos"
         with open(
