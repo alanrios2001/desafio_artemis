@@ -40,9 +40,11 @@ class LaborClaimCalculationExtractor:
         # buscando variações comuns de labels encontrados nos PDFs
         self.field_pattern_map = {
             "total_devido_pelo_reclamado": (
-                r"(?:TOTAL\s+DEVIDO(?:\s+PEL[AO])?\s+RECLAMAD[OA]"
+                r"(?:TOTAL\s+DEVIDO(?:\s+PELO)?\s+RECLAMAD[OA]"
                 r"|TOTAL\s+DEVIDO\s+PELA\s+RECLAMAD[AO]"
-                r"|TOTAL\s+DA\s+RECLAMAD[AO]\s+APOS\s+DEDUCOES)"
+                r"|TOTAL\s+DA\s+RECLAMAD[AO]\s+APOS\s+DEDUCOES"
+                r"|DEBITO\s+TOTAL\s+D[OA]\s+RECLAMAD[AO]"
+                r"(?:\s+EM\s+\d{1,2}/(?:[A-Z]{3}|\d{1,2})/\d{2,4})?)"
             ),
             "contribuicao_social_sobre_salarios_devido": (
                 r"(?:CONTRIBUICAO\s+SOCIAL\s+SOBRE\s+SALARIOS\s+DEVID[OA]S?"
@@ -654,7 +656,7 @@ if __name__ == "__main__":
 
     def run_all_pdfs():
         ignore = [
-            "0000380-42.2023.5.05.0005.pdf",
+            # "0000380-42.2023.5.05.0005.pdf",
             "1001298-45.2023.5.02.0059 - Perito.pdf",
             "1001298-45.2023.5.02.0059 - Reclamada.pdf",
         ]
@@ -664,6 +666,6 @@ if __name__ == "__main__":
                 continue
             print(extractor.extract(pdf_file))
 
-    print(extractor.extract(data_path / "1001111-10.2022.5.02.0047.pdf"))
+    print(extractor.extract(data_path / "0000380-42.2023.5.05.0005.pdf"))
 
     # run_all_pdfs()
