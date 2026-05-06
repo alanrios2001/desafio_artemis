@@ -17,7 +17,7 @@ NUM_CONSUMER_WORKERS = int((max(os.cpu_count() or 0, 1) / 2) - 2)
 
 queue: Queue = Queue()
 extractor = LaborClaimCalculationExtractor()
-extracted_data: list[dict[str, dict]] = []
+extracted_data: dict[str, dict] = {}
 
 
 async def produce_pdfs():
@@ -45,7 +45,7 @@ async def consume_worker():
             break
 
         result = await asyncio.to_thread(extractor.extract, pdf)
-        extracted_data.append({pdf.name: result})
+        extracted_data[pdf.name] = result
         queue.task_done()
 
     logger.info("[main] Finished consumer worker...")
@@ -61,7 +61,7 @@ async def main():
     )
     await asyncio.gather(*tasks)
 
-    for key, data in extracted_data:
+    for key, data in extracted_data.items():
         print(f"{key}: {data}")
 
 

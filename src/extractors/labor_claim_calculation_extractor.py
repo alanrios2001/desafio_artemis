@@ -252,6 +252,11 @@ class LaborClaimCalculationExtractor:
 
                 # usa tabelas apenas como fallback para o que ainda não foi encontrado
                 if remaining_pattern_matches:
+                    logger.debug(
+                        "[LaborClaimCalculationExtractor][extract] PDF:{pdf_name}\n\t"
+                        f"não encontrei esses campos {[pattern for pattern in remaining_pattern_matches]}."
+                        " por busca no xhtml, usando tabelas como fallback"
+                    )
                     try:
                         page_tables: list[str] = []
                         for page in pages_chunk:
@@ -347,8 +352,7 @@ class LaborClaimCalculationExtractor:
         :param table: O texto da tabela, com quebras de linha e espaços limpos.
         :param field_name: O nome do campo a ser extraído, que deve corresponder a uma chave no field_pattern_map.
         """
-        special_extractor = self.special_field_extractors.get(field_name)
-        if special_extractor:
+        if special_extractor := self.special_field_extractors.get(field_name):
             return special_extractor(table)
 
         field_pattern = self.field_pattern_map.get(field_name)
@@ -701,8 +705,7 @@ class LaborClaimCalculationExtractor:
         :param text: Texto normalizado da página ou tabela.
         :return: Valor de FGTS convertido para Decimal, ou None se não for encontrado.
         """
-        exact_fgts_value = self._extract_exact_fgts_line_value(text)
-        if exact_fgts_value is not None:
+        if (exact_fgts_value := self._extract_exact_fgts_line_value(text)) is not None:
             return exact_fgts_value
 
         total_devido_ao_autor_fgts = self._extract_fgts_from_total_devido_ao_autor(text)
@@ -951,8 +954,7 @@ class LaborClaimCalculationExtractor:
         :param field_name: Nome do campo desejado.
         :return: Valor extraído como Decimal, ou None.
         """
-        special_extractor = self.special_field_extractors.get(field_name)
-        if special_extractor:
+        if special_extractor := self.special_field_extractors.get(field_name):
             return special_extractor(text)
 
         field_pattern = self.field_pattern_map.get(field_name)
