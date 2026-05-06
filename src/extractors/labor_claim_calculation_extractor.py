@@ -1,10 +1,11 @@
 import re
 import fitz
-import pymupdf.layout
+import pymupdf.layout  # noqa: F401
 
+from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
-from typing import TypedDict
+from typing import Literal, TypedDict, TypeAlias
 
 from utils.cast_utils import to_decimal
 from utils.general_utils import get_logger
@@ -20,17 +21,55 @@ class PageContent(TypedDict, total=False):
     tables: list[str]
 
 
-class LaborClaimInfo(TypedDict, total=False):
-    """
-    TypedDict para representar o dicionario de informações extraídas do pdf com calculo trabalhista
-    """
+FieldName = Literal[
+    "total_devido_pelo_reclamado",
+    "contribuicao_social_sobre_salarios_devido",
+    "liquido_devido_ao_reclamante",
+    "liquido_devido_ao_advogado",
+    "valor_de_irrf",
+    "valor_do_fgts",
+]
 
-    total_devido_pelo_reclamado: Decimal
-    contribuicao_social_sobre_salarios_devido: Decimal
-    liquido_devido_ao_reclamante: Decimal
-    liquido_devido_ao_advogado: Decimal
-    valor_de_irrf: Decimal
-    valor_do_fgts: Decimal
+ALL_FIELDS: tuple[FieldName, ...] = (
+    "total_devido_pelo_reclamado",
+    "contribuicao_social_sobre_salarios_devido",
+    "liquido_devido_ao_reclamante",
+    "liquido_devido_ao_advogado",
+    "valor_de_irrf",
+    "valor_do_fgts",
+)
+
+LaborClaimInfo: TypeAlias = dict[str, Decimal]
+
+
+@dataclass(slots=True)
+class LaborClaimState:
+    total_devido_pelo_reclamado: Decimal | None = None
+    contribuicao_social_sobre_salarios_devido: Decimal | None = None
+    liquido_devido_ao_reclamante: Decimal | None = None
+    liquido_devido_ao_advogado: Decimal | None = None
+    valor_de_irrf: Decimal | None = None
+    valor_do_fgts: Decimal | None = None
+
+    def has(self, field: FieldName) -> bool:
+        return getattr(self, field) is not None
+
+    def set(self, field: FieldName, value: Decimal) -> None:
+        setattr(self, field, value)
+
+    def missing_fields(self) -> list[FieldName]:
+        return [field for field in ALL_FIELDS if not self.has(field)]
+
+    def to_dict(self, default: Decimal | None = None) -> LaborClaimInfo:
+        info: LaborClaimInfo = {}
+        for field in ALL_FIELDS:
+            value = getattr(self, field)
+            if value is None:
+                if default is None:
+                    continue
+                value = default
+            info[field] = value
+        return info
 
 
 class LaborClaimCalculationExtractor:
@@ -38,29 +77,40 @@ class LaborClaimCalculationExtractor:
         self.separator_re = re.compile(r"^\|\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?$")
         # patterns para extração de cada campo, novos casos podem ser adicionados aqui para melhorar a cobertura,
         # buscando variações comuns de labels encontrados nos PDFs
-        self.field_pattern_map = {
+        self.field_pattern_map: dict[FieldName, str] = {
             "total_devido_pelo_reclamado": (
                 r"(?:TOTAL\s+DEVIDO(?:\s+PELO)?\s+RECLAMAD[OA]"
                 r"|TOTAL\s+DEVIDO\s+PELA\s+RECLAMAD[AO]"
                 r"|TOTAL\s+DA\s+RECLAMAD[AO]\s+APOS\s+DEDUCOES"
                 r"|DEBITO\s+TOTAL\s+D[OA]\s+RECLAMAD[AO]"
+                r"|TOTAL\s+GERAL(?:\s+EM\s+\d{1,2}/(?:[A-Z]{3}|\d{1,2})/\d{2,4})?"
                 r"(?:\s+EM\s+\d{1,2}/(?:[A-Z]{3}|\d{1,2})/\d{2,4})?)"
             ),
             "contribuicao_social_sobre_salarios_devido": (
                 r"(?:CONTRIBUICAO\s+SOCIAL\s+SOBRE\s+SALARIOS\s+DEVID[OA]S?"
-                r"|TOTAL\s+DA\s+CONTRIBUICAO\s+PREVIDENCIARIA)"
+                r"|TOTAL\s+DA\s+CONTRIBUICAO\s+PREVIDENCIARIA"
+                r"|INSS\s+COTA-EMPREGADOR"
+                r"|INSS\s+PARTE\s+DA\s+RECLAMAD[AO]"
+                r"|INSS\s+(?:DO|DA|PARTE\s+DO|PARTE\s+DA)\s+RECLAMANT[EA]"
+                r"|INSS\s+(?:DO|DA|PARTE\s+DO|PARTE\s+DA)\s+RECLAMAD[AO])"
             ),
             "liquido_devido_ao_reclamante": (
                 r"(?:LIQUIDO\s+DEVIDO\s+AO\s+RECLAMANTE"
-                r"|TOTAL\s+LIQUIDO\s+DEVIDO\s+AO\s+AUTOR)"
+                r"|TOTAL\s+LIQUIDO\s+DEVIDO\s+AO\s+AUTOR"
+                r"|CREDITO\s+LIQUIDO)"
             ),
             "liquido_devido_ao_advogado": (
                 r"(?:DEMONSTRATIVO\s+DE\s+HONORARIOS"
-                r"|NOME\s*:\s*HONORARIOS\s+DEVIDOS\s+PELO\s+RECLAMADO)"
+                r"|NOME\s*:\s*HONORARIOS\s+DEVIDOS\s+PELO\s+RECLAMADO"
+                r"|HONORARIOS\s+ADVOCATICIOS\s+DEVIDOS\s+PELA\s+RECLAMAD[AO]"
+                r"|HONORARIOS\s+ADVOCATICIOS\s+AO\s+ADVOGADO\s+DO\s+RECTE"
+                r"|HONORARIOS\s+DE\s+SUCUMBENCIA)"
             ),
             "valor_de_irrf": (
                 r"(?:IRRF\s+DEVIDO\s+PELO\s+RECLAMANTE"
+                r"|IRRF\s+DO\s+RECLAMANTE"
                 r"|IRRF\s+SOBRE\s+HONORARIOS(?:\s+PARA(?:\s+.+)?)?"
+                r"|VALOR\s+TOTAL\s+DO\s+IRRF"
                 r"|IMPOSTO\s+DE\s+RENDA)"
             ),
             "valor_do_fgts": (
@@ -87,7 +137,7 @@ class LaborClaimCalculationExtractor:
             logger.error(f" PDF:{pdf_name} arquivo não encontrado")
             raise FileNotFoundError(f" PDF:{pdf_name} arquivo não encontrado")
 
-        labor_claim_info: LaborClaimInfo = {}
+        labor_claim_state = LaborClaimState()
 
         logger.info(
             f"[LaborClaimCalculationExtractor][extract] PDF:{pdf_name}\n\tPercorrendo paginas em busca"
@@ -110,7 +160,7 @@ class LaborClaimCalculationExtractor:
                 # quais aparecem no texto da página, para decidir se vale a pena tentar extrair tabelas daquela página
                 pending_patterns, pattern_matches = (
                     self._get_pending_patterns_and_matches(
-                        labor_claim_info, normalized_text
+                        labor_claim_state, normalized_text
                     )
                 )
 
@@ -132,12 +182,12 @@ class LaborClaimCalculationExtractor:
 
                 # tenta extrair primeiro pelo texto HTML/XHTML limpo da página
                 self._extract_fields_from_text(
-                    normalized_text, labor_claim_info, pattern_matches
+                    normalized_text, labor_claim_state, pattern_matches
                 )
 
                 # recalcula os campos ainda pendentes na página atual
                 _, remaining_pattern_matches = self._get_pending_patterns_and_matches(
-                    labor_claim_info, normalized_text
+                    labor_claim_state, normalized_text
                 )
 
                 # usa tabelas apenas como fallback para o que ainda não foi encontrado
@@ -147,7 +197,7 @@ class LaborClaimCalculationExtractor:
                             table.to_markdown() for table in page.find_tables()
                         ]
                         self._extract_fields_from_tables(
-                            page_tables, labor_claim_info, remaining_pattern_matches
+                            page_tables, labor_claim_state, remaining_pattern_matches
                         )
                     except Exception as e:
                         logger.warning(
@@ -155,29 +205,25 @@ class LaborClaimCalculationExtractor:
                             f"Erro ao extrair tabelas da página {page_index}: {e}"
                         )
 
-            remaining_fields = [
-                field
-                for field in self.field_pattern_map
-                if field not in labor_claim_info
-            ]
+            remaining_fields = labor_claim_state.missing_fields()
             if remaining_fields:
                 for field in remaining_fields:
-                    labor_claim_info[field] = Decimal(0)
+                    labor_claim_state.set(field, Decimal(0))
                 logger.warning(
                     f"[LaborClaimCalculationExtractor][extract] PDF:{pdf_name}\n\t"
                     "Extração concluída, mas os seguintes campos não foram encontrados: "
                     f"{', '.join(remaining_fields)}."
                 )
 
-        return labor_claim_info
+        return labor_claim_state.to_dict()
 
     def _get_pending_patterns_and_matches(
-        self, labor_claim_info: LaborClaimInfo, text: str
-    ) -> tuple[list[tuple[str, str]], list[str]]:
+        self, labor_claim_state: LaborClaimState, text: str
+    ) -> tuple[list[tuple[FieldName, str]], list[FieldName]]:
         """
         Similar a _get_pending_patterns, mas também verifica se os padrões pendentes aparecem no texto da página.
          Isso pode ajudar a decidir mais rapidamente se vale a pena tentar extrair tabelas daquela página.
-        :param labor_claim_info: O dicionário atual de informações extraídas, usado para determinar quais
+        :param labor_claim_state: O estado atual de informações extraídas, usado para determinar quais
          campos ainda estão pendentes.
         :param text: O texto da página atual, usado para verificar a presença dos padrões pendentes.
         :return: Uma lista de tuplas (field_name, pattern) para os campos que ainda estão pendentes
@@ -186,7 +232,7 @@ class LaborClaimCalculationExtractor:
         pending_patterns = [
             (field, pattern)
             for field, pattern in self.field_pattern_map.items()
-            if field not in labor_claim_info
+            if not labor_claim_state.has(field)
         ]
 
         matched_fields = [
@@ -199,37 +245,37 @@ class LaborClaimCalculationExtractor:
     def _extract_fields_from_tables(
         self,
         page_tables: list[str],
-        labor_claim_info: LaborClaimInfo,
-        matched_fields: list[str],
-    ) -> LaborClaimInfo:
+        labor_claim_state: LaborClaimState,
+        matched_fields: list[FieldName],
+    ) -> LaborClaimState:
         """
         Tenta extrair os campos de interesse a partir das tabelas de uma página.
         :param page_tables: Lista de tabelas extraídas da página, em formato Markdown.
-        :param labor_claim_info: Dicionário atual de informações extraídas, usado para evitar
+        :param labor_claim_state: Estado atual de informações extraídas, usado para evitar
         :param matched_fields: Lista de campos que existem na pagina.
         :return: Dicionário atualizado com os campos extraídos das tabelas.
         """
-        found_fields = []
+        found_fields: list[FieldName] = []
         for table in page_tables:
             # caso todos os campos já tenham sido extraídos, não precisa continuar tentando nas tabelas restantes
             if not matched_fields:
                 break
             for field_name in matched_fields:
-                if field_name in labor_claim_info:
+                if labor_claim_state.has(field_name):
                     continue
                 extracted = self._extract_field_value_from_table(
                     normalize_text(table), field_name
                 )
                 if extracted is not None:  # None explicito evita falsy como Decimal(0)
-                    labor_claim_info[field_name] = extracted
+                    labor_claim_state.set(field_name, extracted)
                     found_fields.append(field_name)
             for field in found_fields:
                 matched_fields.remove(field)
             found_fields = []
-        return labor_claim_info
+        return labor_claim_state
 
     def _extract_field_value_from_table(
-        self, table: str, field_name: str
+        self, table: str, field_name: FieldName
     ) -> Decimal | None:
         """
         Extrai o valor de um campo específico a partir das tabelas extraídas do PDF, usando um padrão de label.
@@ -241,6 +287,9 @@ class LaborClaimCalculationExtractor:
 
         if field_name == "valor_do_fgts":
             return self._extract_fgts_field_value(table)
+
+        if field_name == "contribuicao_social_sobre_salarios_devido":
+            return self._extract_contribuicao_social_value(table)
 
         field_pattern = self.field_pattern_map.get(field_name)
         if not field_pattern:
@@ -287,7 +336,7 @@ class LaborClaimCalculationExtractor:
         """
         blocks = self._extract_honorarios_due_blocks(text)
         if not blocks:
-            return None
+            return self._extract_honorarios_non_demonstrativo_total(text)
 
         total = Decimal("0")
         found_value = False
@@ -337,7 +386,143 @@ class LaborClaimCalculationExtractor:
                 total += value
                 found_value = True
 
-        return total if found_value else None
+        if found_value:
+            return total
+
+        return self._extract_honorarios_non_demonstrativo_total(text)
+
+    def _extract_honorarios_non_demonstrativo_total(self, text: str) -> Decimal | None:
+        """
+        Extrai honorários quando o PDF não contém "Demonstrativo de Honorários".
+
+        Cobre layouts resumidos que trazem o valor final em linhas como:
+        - HONORARIOS ADVOCATICIOS ...
+        - HONORARIOS DE SUCUMBENCIA (10%) ...
+        - - da Reclamante ... / - da Reclamada ...
+
+        :param text: Texto normalizado da página ou tabela.
+        :return: Soma dos honorários identificados, ou None.
+        """
+        primary_total = self._sum_money_closest_to_patterns(
+            text,
+            [
+                r"HONORARIOS\s+ADVOCATICIOS\s+(?:DEVIDOS\s+PELA\s+RECLAMAD[AO]|AO\s+ADVOGADO\s+DO\s+RECTE)",
+                r"HONORARIOS\s+DE\s+SUCUMBENCIA\s*\(\s*\d+(?:,\d+)?%\s*\)",
+            ],
+        )
+        if primary_total is not None:
+            return primary_total
+
+        return self._sum_money_closest_to_patterns(
+            text, [r"-\s*DA\s+RECLAMANTE", r"-\s*DA\s+RECLAMADA"]
+        )
+
+    def _sum_money_closest_to_patterns(
+        self, text: str, label_patterns: list[str]
+    ) -> Decimal | None:
+        """
+        Soma valores monetários mais próximos de labels em cada linha.
+
+        :param text: Texto normalizado da página ou tabela.
+        :param label_patterns: Regex de labels que apontam para valores alvo.
+        :return: Soma dos valores encontrados, ou None.
+        """
+        total = Decimal("0")
+        found_any = False
+
+        compiled_patterns = [
+            re.compile(pattern, re.IGNORECASE) for pattern in label_patterns
+        ]
+
+        for raw_line in text.splitlines():
+            line = re.sub(r"[|*]", " ", raw_line)
+            line = re.sub(r"\s+", " ", line).strip()
+            if not line:
+                continue
+
+            for pattern in compiled_patterns:
+                for label_match in pattern.finditer(line):
+                    value = self._extract_money_on_line_for_label_span(
+                        line, label_match.start(), label_match.end()
+                    )
+                    if value is None:
+                        continue
+                    total += value
+                    found_any = True
+
+        return total if found_any else None
+
+    @staticmethod
+    def _extract_money_on_line_for_label_span(
+        line: str, span_start: int, span_end: int
+    ) -> Decimal | None:
+        """
+        Extrai o valor monetário mais próximo do label na linha, priorizando valores à direita.
+
+        :param line: Linha já sanitizada para busca.
+        :param span_start: Início do span do label.
+        :param span_end: Fim do span do label.
+        :return: Valor monetário mais próximo, ou None.
+        """
+        money_matches = list(re.finditer(MONEY_RE, line, re.IGNORECASE))
+        if not money_matches:
+            return None
+
+        after_matches = [match for match in money_matches if match.start() >= span_end]
+        if after_matches:
+            closest_after = min(
+                after_matches, key=lambda match: match.start() - span_end
+            )
+            return to_decimal(closest_after.group(0))
+
+        before_matches = [match for match in money_matches if match.end() <= span_start]
+        if not before_matches:
+            return None
+
+        closest_before = min(before_matches, key=lambda match: span_start - match.end())
+        return to_decimal(closest_before.group(0))
+
+    def _extract_contribuicao_social_value(self, text: str) -> Decimal | None:
+        """
+        Extrai contribuição social via total explícito ou soma INSS reclamante+reclamada.
+
+        :param text: Texto normalizado da página ou tabela.
+        :return: Valor da contribuição social, ou None.
+        """
+        direct_match = self._extract_money_on_same_line_as_label(
+            text,
+            (
+                r"(?:CONTRIBUICAO\s+SOCIAL\s+SOBRE\s+SALARIOS\s+DEVID[OA]S?"
+                r"|TOTAL\s+DA\s+CONTRIBUICAO\s+PREVIDENCIARIA"
+                r"|INSS\s+COTA-EMPREGADOR"
+                r"|INSS\s+PARTE\s+DA\s+RECLAMAD[AO])"
+            ),
+        )
+        if direct_match is not None:
+            return abs(direct_match)
+
+        return self._extract_inss_reclamante_reclamada_sum(text)
+
+    def _extract_inss_reclamante_reclamada_sum(self, text: str) -> Decimal | None:
+        """
+        Soma INSS da parte reclamante e da parte reclamada quando aparecem separados.
+
+        :param text: Texto normalizado da página ou tabela.
+        :return: Soma das parcelas encontradas, ou None.
+        """
+        inss_reclamante = self._extract_money_on_same_line_as_label(
+            text, r"INSS\s+(?:DO|DA|PARTE\s+DO|PARTE\s+DA)\s+RECLAMANT[EA]"
+        )
+        inss_reclamada = self._extract_money_on_same_line_as_label(
+            text, r"INSS\s+(?:DO|DA|PARTE\s+DO|PARTE\s+DA)\s+RECLAMAD[AO]"
+        )
+
+        if inss_reclamada is None:
+            return None
+
+        return abs(inss_reclamante or Decimal("0")) + abs(
+            inss_reclamada or Decimal("0")
+        )
 
     @staticmethod
     def _extract_honorarios_due_blocks(text: str) -> list[str]:
@@ -473,7 +658,51 @@ class LaborClaimCalculationExtractor:
         if exact_fgts_value is not None:
             return exact_fgts_value
 
-        return self._extract_fgts_from_total_devido_ao_autor(text)
+        total_devido_ao_autor_fgts = self._extract_fgts_from_total_devido_ao_autor(text)
+        if total_devido_ao_autor_fgts is not None:
+            return total_devido_ao_autor_fgts
+
+        return self._extract_fgts_from_anexo_ix_total(text)
+
+    @staticmethod
+    def _extract_fgts_from_anexo_ix_total(text: str) -> Decimal | None:
+        """
+        Extrai FGTS do resumo "Anexo IX - FGTS + Multa 40%" quando houver total final.
+
+        Exemplo:
+        - Selic Simples 15,93% 68.596,52 Total 499.208,72
+
+        :param text: Texto normalizado da página ou tabela.
+        :return: Valor total do anexo IX, ou None.
+        """
+        if not re.search(r"ANEXO\s+IX", text, re.IGNORECASE):
+            return None
+
+        if not re.search(r"FGTS", text, re.IGNORECASE):
+            return None
+
+        for raw_line in text.splitlines():
+            line = re.sub(r"[|*]", " ", raw_line)
+            line = re.sub(r"\s+", " ", line).strip()
+
+            if not re.search(r"ANEXO\s+IX", line, re.IGNORECASE):
+                continue
+
+            total_matches = list(
+                re.finditer(rf"\bTOTAL\b\s*({MONEY_RE})", line, re.IGNORECASE)
+            )
+            if total_matches:
+                return to_decimal(total_matches[-1].group(1))
+
+        multiline_match = re.search(
+            rf"ANEXO\s+IX.*?FGTS.*?SELIC\s+SIMPLES.*?\bTOTAL\b\s*({MONEY_RE})",
+            text,
+            re.IGNORECASE | re.DOTALL,
+        )
+        if multiline_match:
+            return to_decimal(multiline_match.group(1))
+
+        return None
 
     @staticmethod
     def _extract_exact_fgts_line_value(text: str) -> Decimal | None:
@@ -556,29 +785,32 @@ class LaborClaimCalculationExtractor:
         return None
 
     def _extract_fields_from_text(
-        self, text: str, labor_claim_info: LaborClaimInfo, matched_fields: list[str]
-    ) -> LaborClaimInfo:
+        self,
+        text: str,
+        labor_claim_state: LaborClaimState,
+        matched_fields: list[FieldName],
+    ) -> LaborClaimState:
         """
         Tenta extrair os campos de interesse diretamente do texto normalizado da página.
         :param text: Texto normalizado da página.
-        :param labor_claim_info: Dicionário atual de informações extraídas.
+        :param labor_claim_state: Estado atual de informações extraídas.
         :param matched_fields: Campos pendentes cujos labels aparecem na página.
         :return: Dicionário atualizado.
         """
         for field_name in list(matched_fields):
-            if field_name in labor_claim_info:
+            if labor_claim_state.has(field_name):
                 continue
 
             extracted = self._extract_field_value_from_text(text, field_name)
 
             if extracted is not None:
-                labor_claim_info[field_name] = extracted
+                labor_claim_state.set(field_name, extracted)
                 matched_fields.remove(field_name)
 
-        return labor_claim_info
+        return labor_claim_state
 
     def _extract_field_value_from_text(
-        self, text: str, field_name: str
+        self, text: str, field_name: FieldName
     ) -> Decimal | None:
         """
         Extrai o valor de um campo diretamente do texto normalizado da página.
@@ -591,6 +823,9 @@ class LaborClaimCalculationExtractor:
 
         if field_name == "valor_do_fgts":
             return self._extract_fgts_field_value(text)
+
+        if field_name == "contribuicao_social_sobre_salarios_devido":
+            return self._extract_contribuicao_social_value(text)
 
         field_pattern = self.field_pattern_map.get(field_name)
         if not field_pattern:
@@ -658,8 +893,8 @@ if __name__ == "__main__":
     def run_all_pdfs():
         ignore = [
             # "0000380-42.2023.5.05.0005.pdf",
-            "1001298-45.2023.5.02.0059 - Perito.pdf",
-            "1001298-45.2023.5.02.0059 - Reclamada.pdf",
+            # "1001298-45.2023.5.02.0059 - Perito.pdf",
+            # "1001298-45.2023.5.02.0059 - Reclamada.pdf",
         ]
         pdf_files = list(data_path.glob("*.pdf"))
         for pdf_file in pdf_files:
@@ -667,6 +902,6 @@ if __name__ == "__main__":
                 continue
             print(extractor.extract(pdf_file))
 
-    print(extractor.extract(data_path / "1001155-11.2025.5.02.0019.pdf"))
+    # print(extractor.extract(data_path / "1001155-11.2025.5.02.0019.pdf"))
 
-    # run_all_pdfs()
+    run_all_pdfs()
