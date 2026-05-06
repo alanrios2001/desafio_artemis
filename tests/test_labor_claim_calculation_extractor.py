@@ -6,6 +6,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from src.extractors.labor_claim_calculation_extractor import (
+    LaborClaimState,
     LaborClaimCalculationExtractor,
 )
 
@@ -88,3 +89,21 @@ class TestLaborClaimCalculationExtractor(unittest.TestCase):
         extracted = self.extractor._extract_honorarios_demonstrativo_total(text)
 
         self.assertEqual(Decimal("207933.16"), extracted)
+
+    def test_pending_patterns_match_only_with_nearby_money(self):
+        text = "LIQUIDO DEVIDO AO RECLAMANTE R$ 1.234,56"
+
+        _, matched_fields = self.extractor._get_pending_patterns_and_matches(
+            LaborClaimState(), text
+        )
+
+        self.assertIn("liquido_devido_ao_reclamante", matched_fields)
+
+    def test_pending_patterns_ignore_label_without_nearby_money(self):
+        far_apart_text = "LIQUIDO DEVIDO AO RECLAMANTE " + ("X" * 170) + " R$ 1.234,56"
+
+        _, matched_fields = self.extractor._get_pending_patterns_and_matches(
+            LaborClaimState(), far_apart_text
+        )
+
+        self.assertNotIn("liquido_devido_ao_reclamante", matched_fields)

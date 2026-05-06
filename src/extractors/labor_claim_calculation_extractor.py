@@ -5,23 +5,17 @@ import pymupdf.layout  # noqa: F401
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
-from typing import Callable, Literal, TypedDict, TypeAlias
+from typing import Callable, Literal, TypeAlias
 
 from pymupdf import Document, Page
 
 from utils.cast_utils import to_decimal
 from utils.general_utils import get_logger
-from utils.text_utils import normalize_text, normalize_html_text
+from utils.text_utils import normalize_html_text
 
 logger = get_logger(__name__)
 
 MONEY_RE = r"\(?\s*(?:R\$\s*)?\d{1,3}(?:\.\d{3})*,\d{2}\s*\)?"
-
-
-class PageContent(TypedDict, total=False):
-    text: str
-    tables: list[str]
-
 
 FieldName = Literal[
     "total_devido_pelo_reclamado",
@@ -75,6 +69,7 @@ class LaborClaimState:
 
 class LaborClaimCalculationExtractor:
     def __init__(self) -> None:
+        self.label_money_window = 150
         self.separator_re = re.compile(r"^\|\s*:?-{2,}:?\s*(\|\s*:?-{2,}:?\s*)+\|?$")
         # patterns para extração de cada campo, novos casos podem ser adicionados aqui para melhorar a cobertura,
         # buscando variações comuns de labels encontrados nos PDFs
@@ -173,10 +168,7 @@ class LaborClaimCalculationExtractor:
 
     def extract(self, pdf_path: str | Path) -> LaborClaimInfo:
         """
-        Extrai os campos contábeis do PDF combinando texto XHTML e tabelas.
-
-        O fluxo prioriza leitura textual (mais rápida) e usa tabelas apenas como
-        fallback para campos ainda pendentes no bloco de páginas analisado.
+        Extrai os campos contábeis do PDF a partir de texto XHTML normalizado.
 
         :param pdf_path: Caminho do arquivo PDF a ser processado.
         :return: Dicionário com os valores extraídos para todos os campos de interesse.
@@ -202,7 +194,7 @@ class LaborClaimCalculationExtractor:
             document = self._reorder_document_pages(document)
             total_pages = len(document)
             for chunk_start in range(0, total_pages, 3):
-                # Processa blocos curtos para reduzir custo de extração de tabelas.
+                # Processa blocos curtos para limitar custo de leitura/normalização por iteração.
                 chunk_end = min(chunk_start + 3, total_pages)
                 pages_chunk = [document[i] for i in range(chunk_start, chunk_end)]
 
@@ -223,8 +215,7 @@ class LaborClaimCalculationExtractor:
 
                 normalized_text = "\n".join(normalized_parts)
 
-                # melhora eficiência verificando labels pendentes antes de extrair tabelas, e das pendentes
-                # quais aparecem no texto da página, para decidir se vale a pena tentar extrair tabelas daquela página
+                # melhora eficiência tentando apenas campos pendentes com label + valor monetário próximo
                 pending_patterns, pattern_matches = (
                     self._get_pending_patterns_and_matches(
                         labor_claim_state, normalized_text
@@ -238,7 +229,6 @@ class LaborClaimCalculationExtractor:
                     )
                     break
 
-                # verifica se algum dos padrões pendentes aparece no texto da página antes de tentar extrair tabelas
                 if not pattern_matches:
                     logger.debug(
                         f"[LaborClaimCalculationExtractor][extract] PDF:{pdf_name}\n\t"
@@ -252,32 +242,6 @@ class LaborClaimCalculationExtractor:
                     normalized_text, labor_claim_state, pattern_matches
                 )
 
-                _, remaining_pattern_matches = self._get_pending_patterns_and_matches(
-                    labor_claim_state, normalized_text
-                )
-
-                # usa tabelas apenas como fallback para o que ainda não foi encontrado
-                if remaining_pattern_matches:
-                    logger.debug(
-                        "[LaborClaimCalculationExtractor][extract] PDF:{pdf_name}\n\t"
-                        f"não encontrei esses campos {[pattern for pattern in remaining_pattern_matches]}."
-                        " por busca no xhtml, usando tabelas como fallback"
-                    )
-                    try:
-                        page_tables: list[str] = []
-                        for page in pages_chunk:
-                            page_tables.extend(
-                                table.to_markdown() for table in page.find_tables()
-                            )
-                        self._extract_fields_from_tables(
-                            page_tables, labor_claim_state, remaining_pattern_matches
-                        )
-                    except Exception as e:
-                        logger.warning(
-                            f"[LaborClaimCalculationExtractor][extract] PDF:{pdf_name}\n\t"
-                            f"Erro ao extrair tabelas do bloco {chunk_start + 1}-{chunk_end}: {e}"
-                        )
-
             remaining_fields = labor_claim_state.missing_fields()
             if remaining_fields:
                 logger.warning(
@@ -288,6 +252,25 @@ class LaborClaimCalculationExtractor:
                 )
 
         return labor_claim_state.to_dict()
+
+    @staticmethod
+    def _has_money_near_label(text: str, label_pattern: str, window: int) -> bool:
+        """
+        Verifica se existe valor monetário próximo de algum match do label.
+
+        :param text: Texto normalizado do bloco de páginas.
+        :param label_pattern: Regex do label do campo.
+        :param window: Janela de caracteres à esquerda/direita do label.
+        :return: True quando encontrar label com MONEY_RE na vizinhança.
+        """
+        for label_match in re.finditer(label_pattern, text, re.IGNORECASE):
+            left = max(0, label_match.start() - window)
+            right = min(len(text), label_match.end() + window)
+            snippet = text[left:right]
+            if re.search(MONEY_RE, snippet, re.IGNORECASE):
+                return True
+
+        return False
 
     def _get_pending_patterns_and_matches(
         self, labor_claim_state: LaborClaimState, text: str
@@ -309,94 +292,12 @@ class LaborClaimCalculationExtractor:
         ]
 
         matched_fields = [
-            # Evita tentativas caras (ex.: tabelas) para campos cujos labels não aparecem no texto.
+            # Reduz falso positivo de label isolado exigindo valor monetário na vizinhança do match.
             field
             for field, pattern in pending_patterns
-            if re.search(pattern, text, re.IGNORECASE)
+            if self._has_money_near_label(text, pattern, self.label_money_window)
         ]
         return pending_patterns, matched_fields
-
-    def _extract_fields_from_tables(
-        self,
-        page_tables: list[str],
-        labor_claim_state: LaborClaimState,
-        matched_fields: list[FieldName],
-    ) -> LaborClaimState:
-        """
-        Tenta extrair os campos de interesse a partir das tabelas de uma página.
-
-        :param page_tables: Lista de tabelas extraídas da página, em formato Markdown.
-        :param labor_claim_state: Estado atual das informações extraídas.
-        :param matched_fields: Lista de campos que existem na pagina.
-        :return: Estado atualizado com os campos extraídos das tabelas.
-        """
-        found_fields: list[FieldName] = []
-        for table in page_tables:
-            # caso todos os campos já tenham sido extraídos, não precisa continuar tentando nas tabelas restantes
-            if not matched_fields:
-                break
-            for field_name in matched_fields:
-                if labor_claim_state.has(
-                    field_name
-                ) and not self._is_soft_value_for_irrf(
-                    field_name, getattr(labor_claim_state, field_name)
-                ):
-                    continue
-                extracted = self._extract_field_value_from_table(
-                    normalize_text(table), field_name
-                )
-                if extracted is not None:  # None explicito evita falsy como Decimal(0)
-                    labor_claim_state.set(field_name, extracted)
-                    found_fields.append(field_name)
-            for field in found_fields:
-                matched_fields.remove(field)
-            found_fields = []
-        return labor_claim_state
-
-    def _extract_field_value_from_table(
-        self, table: str, field_name: FieldName
-    ) -> Decimal | None:
-        """
-        Extrai o valor de um campo específico a partir das tabelas extraídas do PDF, usando um padrão de label.
-
-        :param table: O texto da tabela, com quebras de linha e espaços limpos.
-        :param field_name: O nome do campo a ser extraído, que deve corresponder a uma chave no field_pattern_map.
-        :return: Valor extraído como Decimal, ou None quando o campo não é encontrado.
-        """
-        if special_extractor := self.special_field_extractors.get(field_name):
-            return special_extractor(table)
-
-        field_pattern = self.field_pattern_map.get(field_name)
-        if not field_pattern:
-            return None
-
-        label_re = re.compile(
-            rf"^\*{{0,2}}\s*{field_pattern}\s*\*{{0,2}}\s*$", re.IGNORECASE
-        )
-        money_re = re.compile(
-            rf"^\*{{0,2}}\s*({MONEY_RE})\s*\*{{0,2}}\s*$", re.IGNORECASE
-        )
-
-        for raw_line in table.splitlines():
-            # Percorre célula a célula para capturar o valor que aparece após o label na mesma linha.
-            cells = self._extract_line_cells(raw_line)
-            if not cells:
-                continue
-            for idx, cell in enumerate(cells):
-                if not label_re.match(cell):
-                    continue
-
-                for candidate in cells[idx + 1 :]:
-                    m = money_re.match(candidate) or re.search(
-                        MONEY_RE, candidate, re.IGNORECASE
-                    )
-                    if not m:
-                        continue
-                    raw_value = m.group(1) if m.lastindex else m.group(0)
-                    return to_decimal(raw_value)
-                break
-
-        return self._extract_money_on_same_line_as_label(table, field_pattern)
 
     def _extract_honorarios_demonstrativo_total(self, text: str) -> Decimal | None:
         """
@@ -1061,16 +962,9 @@ if __name__ == "__main__":
     extractor = LaborClaimCalculationExtractor()
 
     def run_all_pdfs():
-        ignore = [
-            # "0000380-42.2023.5.05.0005.pdf",
-            # "1001298-45.2023.5.02.0059 - Perito.pdf",
-            # "1001298-45.2023.5.02.0059 - Reclamada.pdf",
-        ]
         pdf_files = list(data_path.glob("*.pdf"))
         for pdf_file in pdf_files:
             # Permite rodar lote pulando casos específicos durante depuração.
-            if any(ignored in str(pdf_file) for ignored in ignore):
-                continue
             print(extractor.extract(pdf_file))
 
     start = time.time()
