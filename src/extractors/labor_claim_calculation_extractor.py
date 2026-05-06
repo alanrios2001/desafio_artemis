@@ -5,7 +5,7 @@ import pymupdf.layout  # noqa: F401
 from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
-from typing import Literal, TypedDict, TypeAlias
+from typing import Callable, Literal, TypedDict, TypeAlias
 
 from utils.cast_utils import to_decimal
 from utils.general_utils import get_logger
@@ -118,6 +118,13 @@ class LaborClaimCalculationExtractor:
                 r"|DIFERENCA\s+DE\s+FGTS\s+DO\s+CONTRATO"
                 r"|TOTAL\s+DO\s+FGTS)"
             ),
+        }
+        self.special_field_extractors: dict[
+            FieldName, Callable[[str], Decimal | None]
+        ] = {
+            "liquido_devido_ao_advogado": self._extract_honorarios_demonstrativo_total,
+            "valor_do_fgts": self._extract_fgts_field_value,
+            "contribuicao_social_sobre_salarios_devido": self._extract_contribuicao_social_value,
         }
 
     def extract(self, pdf_path: str | Path) -> LaborClaimInfo:
@@ -282,14 +289,9 @@ class LaborClaimCalculationExtractor:
         :param table: O texto da tabela, com quebras de linha e espaços limpos.
         :param field_name: O nome do campo a ser extraído, que deve corresponder a uma chave no field_pattern_map.
         """
-        if field_name == "liquido_devido_ao_advogado":
-            return self._extract_honorarios_demonstrativo_total(table)
-
-        if field_name == "valor_do_fgts":
-            return self._extract_fgts_field_value(table)
-
-        if field_name == "contribuicao_social_sobre_salarios_devido":
-            return self._extract_contribuicao_social_value(table)
+        special_extractor = self.special_field_extractors.get(field_name)
+        if special_extractor:
+            return special_extractor(table)
 
         field_pattern = self.field_pattern_map.get(field_name)
         if not field_pattern:
@@ -818,14 +820,9 @@ class LaborClaimCalculationExtractor:
         :param field_name: Nome do campo desejado.
         :return: Valor extraído como Decimal, ou None.
         """
-        if field_name == "liquido_devido_ao_advogado":
-            return self._extract_honorarios_demonstrativo_total(text)
-
-        if field_name == "valor_do_fgts":
-            return self._extract_fgts_field_value(text)
-
-        if field_name == "contribuicao_social_sobre_salarios_devido":
-            return self._extract_contribuicao_social_value(text)
+        special_extractor = self.special_field_extractors.get(field_name)
+        if special_extractor:
+            return special_extractor(text)
 
         field_pattern = self.field_pattern_map.get(field_name)
         if not field_pattern:
