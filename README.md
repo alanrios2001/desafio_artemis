@@ -66,9 +66,9 @@ O projeto foi estruturado para ser modular e escalável.
 Na classe de extração de cálculos trabalhistas, o `pymupdf` é utilizado para ler o conteúdo dos PDFs.
 Técnicas com OCR foram descartadas porque o universo de PDFs processados possui texto selecionável.
 
-Extrair tabelas do PDF é mais custoso com `page.find_tables()` + `to_markdown()`. Por isso, o fluxo primeiro tenta extrair informações via `get_text("xhtml")`, decodificando com `html.unescape` e normalizando o conteúdo (removendo espaços extras, acentuação e preservando quebras de linha). Se essa etapa não for suficiente, entra o fallback de tabelas com `find_tables()` + `to_markdown()`.
+Antes de tentar extração de valores, o fluxo faz uma verificação robusta no texto normalizado: além do match do label por regex, exige indício de valor monetário próximo ao label (janela local de contexto). Com isso, o processamento segue totalmente pela trilha textual via `get_text("xhtml")`, focando apenas candidatos com maior chance de sucesso.
 
-A extração textual é guiada por regex e heurísticas de proximidade entre rótulo e valor, reduzindo falsos positivos e priorizando candidatos mais confiáveis por contexto de linha.
+A extração textual é guiada por regex e heurísticas de proximidade entre rótulo e valor, reduzindo falsos positivos e priorizando candidatos mais confiáveis por contexto de linha. Mesmo sem essa pré-validação, a extração ainda pode acertar os campos; porém, tende a fazer verificações desnecessárias dentro do fluxo, com custo maior de processamento.
 
 No processamento em lote, há uma orquestração assíncrona com `asyncio`, usando fila de PDFs e workers consumidores para manter boa vazão.
 
@@ -78,10 +78,10 @@ A estrutura de dados para armazenar os campos extraídos é um `dataclass`, que 
 
 1. O PDF é iterado em chunks para evitar tabelas quebradas e reduzir erros na extração dos valores.
 2. O texto é extraído em XHTML, decodificado e normalizado.
-3. O conteúdo passa por um método que identifica rótulos e valores, retornando:
+3. O conteúdo passa por uma pré-validação que identifica rótulos pendentes e confirma se há valor monetário próximo, retornando:
    - campos ainda pendentes;
-   - campos pendentes que tiveram match de regex na página.
-4. Quando há campo pendente com regex match, a extração tenta focar somente nesses campos para evitar tentativas desnecessárias e fallback prematuro.
+   - campos pendentes considerados candidatos reais para extração no bloco.
+4. Quando há candidato válido, a extração tenta focar somente nesses campos para evitar tentativas desnecessárias.
 
 ### Extração via XHTML
 
@@ -92,16 +92,7 @@ Como os dados geralmente aparecem em tabelas (ou com rótulos próximos), foi ap
 - escolhe o valor mais próximo;
 - em caso de empate, prioriza o valor à direita ou na mesma linha do rótulo.
 
-### Fallback via tabelas
-
-Se ainda houver campos pendentes após a etapa XHTML:
-
-- o chunk é iterado página por página;
-- as tabelas são extraídas com `find_tables()` e convertidas com `to_markdown()`;
-- o markdown é processado linha a linha com regex;
-- para cada campo pendente com match, seleciona-se o valor à direita do rótulo.
-
-Caso o campo não seja extraído por nenhuma estratégia, ele recebe valor `None` para diferenciar de campos cujo valor real é `0`.
+Caso o campo não seja extraído pela estratégia textual, ele recebe valor `None` para diferenciar de campos cujo valor real é `0`.
 
 ## Regras específicas
 

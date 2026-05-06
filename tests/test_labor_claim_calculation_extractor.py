@@ -6,6 +6,7 @@ from decimal import Decimal
 from pathlib import Path
 
 from src.extractors.labor_claim_calculation_extractor import (
+    LaborClaimState,
     LaborClaimCalculationExtractor,
 )
 
@@ -29,24 +30,6 @@ class TestLaborClaimCalculationExtractor(unittest.TestCase):
         )
 
         extracted = self.extractor._extract_honorarios_demonstrativo_total(text)
-
-        self.assertEqual(Decimal("4557.76"), extracted)
-
-    def test_extract_honorarios_from_demonstrativo_table_normalized(self):
-        table_text = "\n".join(
-            [
-                "|Demonstrativo de Honorarios|Col2|Col3|Col4|Col5|Col6|Col7|Col8|",
-                "|---|---|---|---|---|---|---|---|",
-                "|** Nome: HONORARIOS DEVIDOS PELO RECLAMADO**|** Nome: HONORARIOS DEVIDOS PELO RECLAMADO**|",
-                "|15/12/2023|HONORARIOS PERICIAIS - ENGENHEIRO|LAUDO EMPRESTADO|3.500,00|1,019223195|3.567,28"
-                "|-|3.567,28|",
-                "|30/04/2025|HONORARIOS ADVOCATICIOS|RICARDO ARAUJO ALVES|30.385,04|30.385,04|15,00 %|15,00 %"
-                "|4.557,76|",
-                "|**Total**|**Total**|**Total**|**Total**|**Total**|**Total**|**Total**|**8.125,04**|",
-            ]
-        )
-
-        extracted = self.extractor._extract_honorarios_demonstrativo_total(table_text)
 
         self.assertEqual(Decimal("4557.76"), extracted)
 
@@ -88,3 +71,21 @@ class TestLaborClaimCalculationExtractor(unittest.TestCase):
         extracted = self.extractor._extract_honorarios_demonstrativo_total(text)
 
         self.assertEqual(Decimal("207933.16"), extracted)
+
+    def test_pending_patterns_match_only_with_nearby_money(self):
+        text = "LIQUIDO DEVIDO AO RECLAMANTE R$ 1.234,56"
+
+        _, matched_fields = self.extractor._get_pending_patterns_and_matches(
+            LaborClaimState(), text
+        )
+
+        self.assertIn("liquido_devido_ao_reclamante", matched_fields)
+
+    def test_pending_patterns_ignore_label_without_nearby_money(self):
+        far_apart_text = "LIQUIDO DEVIDO AO RECLAMANTE " + ("X" * 170) + " R$ 1.234,56"
+
+        _, matched_fields = self.extractor._get_pending_patterns_and_matches(
+            LaborClaimState(), far_apart_text
+        )
+
+        self.assertNotIn("liquido_devido_ao_reclamante", matched_fields)
