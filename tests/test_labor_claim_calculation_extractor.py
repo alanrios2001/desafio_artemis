@@ -66,3 +66,17 @@ class TestLaborClaimCalculationExtractor(unittest.TestCase):
 
             for key, expected_value in expected_data.items():
                 self.assertEqual(expected_value, extracted_data[key])
+
+    def test_extract_honorarios_sum_reclamante_and_reclamado_blocks(self):
+        text = (
+            "Demonstrativo de Honorarios Nome: HONORARIOS DEVIDOS PELO RECLAMANTE "
+            "06/06/2022 28.780,54 1,001146708 28.813,54 11.420,53 40.234,07 HONORARIOS DE SUCUMBENCIA "
+            "PATRONO DA RECLAMADA 40.234,07 Total Nome: HONORARIOS DEVIDOS PELO RECLAMADO "
+            "10/01/2024 3.500,00 1,200800000 4.202,80 - 4.202,80 HONORARIOS PERICIAIS - ENGENHEIRO "
+            "01/10/2025 1.117.993,92 15,00 % 167.699,09 HONORARIOS DE SUCUMBENCIA PATRONO DO RECLAMANTE "
+            "171.901,89 Total Demonstrativo de Imposto de Renda"
+        )
+
+        extracted = self.extractor._extract_honorarios_demonstrativo_total(text)
+
+        self.assertEqual(Decimal("207933.16"), extracted)

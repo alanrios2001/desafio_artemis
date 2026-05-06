@@ -275,16 +275,17 @@ class LaborClaimCalculationExtractor:
 
     def _extract_honorarios_demonstrativo_total(self, text: str) -> Decimal | None:
         """
-        Extrai honorários do advogado apenas do Demonstrativo de Honorários.
+        Extrai honorários do advogado do Demonstrativo de Honorários.
 
-        A extração considera somente blocos "NOME: HONORARIOS DEVIDOS PELO RECLAMADO"
-        e soma ocorrências de honorários advocatícios/sucumbenciais. Isso evita
-        capturar honorários periciais ou totais gerais sem discriminação.
+        A extração considera blocos "NOME: HONORARIOS DEVIDOS PELO RECLAMADO"
+        e "NOME: HONORARIOS DEVIDOS PELO RECLAMANTE", somando ocorrências de
+        honorários advocatícios/sucumbenciais. Isso evita capturar honorários
+        periciais ou totais gerais sem discriminação.
 
         :param text: Texto normalizado da página (xhtml) ou tabela Markdown.
         :return: Soma dos honorários devidos ao advogado, ou None se não encontrado.
         """
-        blocks = self._extract_honorarios_reclamado_blocks(text)
+        blocks = self._extract_honorarios_due_blocks(text)
         if not blocks:
             return None
 
@@ -339,15 +340,15 @@ class LaborClaimCalculationExtractor:
         return total if found_value else None
 
     @staticmethod
-    def _extract_honorarios_reclamado_blocks(text: str) -> list[str]:
+    def _extract_honorarios_due_blocks(text: str) -> list[str]:
         """
-        Recorta blocos do Demonstrativo de Honorários devidos pelo reclamado.
+        Recorta blocos do Demonstrativo de Honorários devidos pelo reclamado/reclamante.
 
         O recorte é tolerante a texto corrido (xhtml normalizado) e a linhas de
         tabela Markdown, evitando depender exclusivamente de quebras de linha.
 
         :param text: Texto normalizado da página ou tabela.
-        :return: Lista de blocos do demonstrativo de honorários do reclamado.
+        :return: Lista de blocos do demonstrativo de honorários.
         """
         cleaned_text = re.sub(r"[|*]", " ", text)
         cleaned_text = re.sub(r"[ \t\r\f\v]+", " ", cleaned_text).strip()
@@ -361,15 +362,15 @@ class LaborClaimCalculationExtractor:
             r"DEMONSTRATIVO\s+DE\s+HONORARIOS(?P<body>.*?)(?=DEMONSTRATIVO\s+DE\s+|$)",
             re.IGNORECASE | re.DOTALL,
         )
-        reclamado_block_re = re.compile(
-            r"NOME\s*:\s*HONORARIOS\s+DEVIDOS\s+PELO\s+RECLAMADO(?P<body>.*?)(?=NOME\s*:|$)",
+        due_block_re = re.compile(
+            r"NOME\s*:\s*HONORARIOS\s+DEVIDOS\s+PELO\s+(?:RECLAMADO|RECLAMANTE)(?P<body>.*?)(?=NOME\s*:|$)",
             re.IGNORECASE | re.DOTALL,
         )
 
         blocks: list[str] = []
         for demonstrativo_match in demonstrativo_re.finditer(cleaned_text):
             demonstrativo_body = demonstrativo_match.group("body")
-            for block_match in reclamado_block_re.finditer(demonstrativo_body):
+            for block_match in due_block_re.finditer(demonstrativo_body):
                 blocks.append(block_match.group("body"))
 
         return blocks
@@ -666,6 +667,6 @@ if __name__ == "__main__":
                 continue
             print(extractor.extract(pdf_file))
 
-    print(extractor.extract(data_path / "0000380-42.2023.5.05.0005.pdf"))
+    print(extractor.extract(data_path / "1001155-11.2025.5.02.0019.pdf"))
 
     # run_all_pdfs()
