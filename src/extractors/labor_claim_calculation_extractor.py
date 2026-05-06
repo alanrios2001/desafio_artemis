@@ -54,15 +54,19 @@ class LaborClaimState:
     valor_do_fgts: Decimal | None = None
 
     def has(self, field: FieldName) -> bool:
+        # Consulta centralizada para saber se um campo já foi preenchido.
         return getattr(self, field) is not None
 
     def set(self, field: FieldName, value: Decimal) -> None:
+        # Atualiza dinamicamente o atributo correspondente ao campo extraído.
         setattr(self, field, value)
 
     def missing_fields(self) -> list[FieldName]:
+        # Retorna somente os campos ainda pendentes para orientar os próximos passos da extração.
         return [field for field in ALL_FIELDS if not self.has(field)]
 
     def to_dict(self) -> LaborClaimInfo:
+        # Gera o payload final preservando a ordem definida em ALL_FIELDS.
         info: LaborClaimInfo = {}
         for field in ALL_FIELDS:
             info[field] = getattr(self, field)
@@ -124,6 +128,7 @@ class LaborClaimCalculationExtractor:
     @staticmethod
     def _is_soft_value_for_irrf(field_name: FieldName, value: Decimal | None) -> bool:
         """Permite revisar IRRF quando o valor atual é 0,00 e pode haver valor definitivo depois."""
+        # Trata 0,00 de IRRF como valor provisório, permitindo sobrescrita posterior.
         return field_name == "valor_de_irrf" and value == Decimal("0")
 
     @staticmethod
@@ -151,6 +156,7 @@ class LaborClaimCalculationExtractor:
         right = total_pages
 
         while left < right:
+            # Consome um bloco do início...
             left_end = min(left + split_len, right)
             ordered_indices.extend(range(left, left_end))
             left = left_end
@@ -158,6 +164,7 @@ class LaborClaimCalculationExtractor:
             if left >= right:
                 break
 
+            # e alterna com um bloco do fim, reduzindo o espaço de busca.
             right_start = max(right - split_len, left)
             ordered_indices.extend(range(right_start, right))
             right = right_start
@@ -166,10 +173,13 @@ class LaborClaimCalculationExtractor:
 
     def extract(self, pdf_path: str | Path) -> LaborClaimInfo:
         """
-        Extrai as informações contábeis navegando pelas paginas, a partir da extração de texto e tabelas do pdf,
-         organizando por página.
-        :param pdf_path: Caminho para o arquivo PDF a ser processado.
-        :return: Dicionario contendo os campos extraídos
+        Extrai os campos contábeis do PDF combinando texto XHTML e tabelas.
+
+        O fluxo prioriza leitura textual (mais rápida) e usa tabelas apenas como
+        fallback para campos ainda pendentes no bloco de páginas analisado.
+
+        :param pdf_path: Caminho do arquivo PDF a ser processado.
+        :return: Dicionário com os valores extraídos para todos os campos de interesse.
         """
         pdf_path = Path(pdf_path)
         pdf_name = pdf_path.name
@@ -192,6 +202,7 @@ class LaborClaimCalculationExtractor:
             document = self._reorder_document_pages(document)
             total_pages = len(document)
             for chunk_start in range(0, total_pages, 3):
+                # Processa blocos curtos para reduzir custo de extração de tabelas.
                 chunk_end = min(chunk_start + 3, total_pages)
                 pages_chunk = [document[i] for i in range(chunk_start, chunk_end)]
 
@@ -282,21 +293,23 @@ class LaborClaimCalculationExtractor:
         self, labor_claim_state: LaborClaimState, text: str
     ) -> tuple[list[tuple[FieldName, str]], list[FieldName]]:
         """
-        Similar a _get_pending_patterns, mas também verifica se os padrões pendentes aparecem no texto da página.
-         Isso pode ajudar a decidir mais rapidamente se vale a pena tentar extrair tabelas daquela página.
-        :param labor_claim_state: O estado atual de informações extraídas, usado para determinar quais
-         campos ainda estão pendentes.
-        :param text: O texto da página atual, usado para verificar a presença dos padrões pendentes.
-        :return: Uma lista de tuplas (field_name, pattern) para os campos que ainda estão pendentes
-         e cujos padrões aparecem no texto.
+        Calcula campos pendentes e quais labels desses campos aparecem no texto.
+
+        :param labor_claim_state: Estado atual com campos já preenchidos.
+        :param text: Texto normalizado do bloco de páginas.
+        :return: Tupla com:
+            - lista de (campo, regex) ainda pendentes;
+            - lista de campos pendentes cujos labels foram encontrados no texto.
         """
         pending_patterns = [
+            # Mantém apenas padrões de campos ainda não preenchidos no estado acumulado.
             (field, pattern)
             for field, pattern in self.field_pattern_map.items()
             if not labor_claim_state.has(field)
         ]
 
         matched_fields = [
+            # Evita tentativas caras (ex.: tabelas) para campos cujos labels não aparecem no texto.
             field
             for field, pattern in pending_patterns
             if re.search(pattern, text, re.IGNORECASE)
@@ -311,10 +324,11 @@ class LaborClaimCalculationExtractor:
     ) -> LaborClaimState:
         """
         Tenta extrair os campos de interesse a partir das tabelas de uma página.
+
         :param page_tables: Lista de tabelas extraídas da página, em formato Markdown.
-        :param labor_claim_state: Estado atual de informações extraídas, usado para evitar
+        :param labor_claim_state: Estado atual das informações extraídas.
         :param matched_fields: Lista de campos que existem na pagina.
-        :return: Dicionário atualizado com os campos extraídos das tabelas.
+        :return: Estado atualizado com os campos extraídos das tabelas.
         """
         found_fields: list[FieldName] = []
         for table in page_tables:
@@ -344,8 +358,10 @@ class LaborClaimCalculationExtractor:
     ) -> Decimal | None:
         """
         Extrai o valor de um campo específico a partir das tabelas extraídas do PDF, usando um padrão de label.
+
         :param table: O texto da tabela, com quebras de linha e espaços limpos.
         :param field_name: O nome do campo a ser extraído, que deve corresponder a uma chave no field_pattern_map.
+        :return: Valor extraído como Decimal, ou None quando o campo não é encontrado.
         """
         if special_extractor := self.special_field_extractors.get(field_name):
             return special_extractor(table)
@@ -362,6 +378,7 @@ class LaborClaimCalculationExtractor:
         )
 
         for raw_line in table.splitlines():
+            # Percorre célula a célula para capturar o valor que aparece após o label na mesma linha.
             cells = self._extract_line_cells(raw_line)
             if not cells:
                 continue
@@ -395,6 +412,7 @@ class LaborClaimCalculationExtractor:
         """
         blocks = self._extract_honorarios_due_blocks(text)
         if not blocks:
+            # Se não há demonstrativo estruturado, cai para heurísticas de layouts resumidos.
             return self._extract_honorarios_non_demonstrativo_total(text)
 
         total = Decimal("0")
@@ -408,6 +426,7 @@ class LaborClaimCalculationExtractor:
             non_empty_lines = [line for line in block.splitlines() if line.strip()]
 
             if len(non_empty_lines) > 1:
+                # Prioriza leitura por linha/célula quando há estrutura tabular visível.
                 for line_text in non_empty_lines:
                     if not target_re.search(line_text):
                         continue
@@ -429,6 +448,7 @@ class LaborClaimCalculationExtractor:
             if found_in_block:
                 continue
 
+            # Fallback para texto corrido: usa proximidade entre label e valor monetário.
             for target_match in target_re.finditer(block):
                 value = self._extract_money_closest_to_span(
                     block, target_match.start(), target_match.end()
@@ -466,6 +486,7 @@ class LaborClaimCalculationExtractor:
         if primary_total is not None:
             return primary_total
 
+        # Último fallback para layouts que separam apenas "da Reclamante/Reclamada".
         return self._sum_money_closest_to_patterns(
             text, [r"-\s*DA\s+RECLAMANTE", r"-\s*DA\s+RECLAMADA"]
         )
@@ -491,6 +512,7 @@ class LaborClaimCalculationExtractor:
             if not line:
                 continue
 
+            # Em cada linha, soma o valor mais próximo de cada ocorrência de label alvo.
             for pattern in compiled_patterns:
                 for label_match in pattern.finditer(line):
                     value = self._extract_money_on_line_for_label_span(
@@ -521,6 +543,7 @@ class LaborClaimCalculationExtractor:
 
         after_matches = [match for match in money_matches if match.start() >= span_end]
         if after_matches:
+            # Regra principal: prioriza valores à direita do label.
             closest_after = min(
                 after_matches, key=lambda match: match.start() - span_end
             )
@@ -530,6 +553,7 @@ class LaborClaimCalculationExtractor:
         if not before_matches:
             return None
 
+        # Sem candidato à direita, usa o valor imediatamente anterior ao label.
         closest_before = min(before_matches, key=lambda match: span_start - match.end())
         return to_decimal(closest_before.group(0))
 
@@ -550,8 +574,10 @@ class LaborClaimCalculationExtractor:
             ),
         )
         if direct_match is not None:
+            # Normaliza sinal para retornar contribuição sempre positiva.
             return abs(direct_match)
 
+        # Quando não há total explícito, compõe a contribuição pela soma das parcelas.
         return self._extract_inss_reclamante_reclamada_sum(text)
 
     def _extract_inss_reclamante_reclamada_sum(self, text: str) -> Decimal | None:
@@ -569,6 +595,7 @@ class LaborClaimCalculationExtractor:
         )
 
         if inss_reclamada is None:
+            # Exige ao menos a parcela da reclamada para considerar o campo confiável.
             return None
 
         return abs(inss_reclamante or Decimal("0")) + abs(
@@ -601,6 +628,7 @@ class LaborClaimCalculationExtractor:
         blocks: list[str] = []
         for demonstrativo_match in demonstrativo_re.finditer(text):
             demonstrativo_body = demonstrativo_match.group("body")
+            # Dentro de cada demonstrativo, separa blocos por parte (reclamado/reclamante).
             for block_match in due_block_re.finditer(demonstrativo_body):
                 blocks.append(block_match.group("body"))
 
@@ -615,6 +643,11 @@ class LaborClaimCalculationExtractor:
 
         Útil para linhas longas/tabelas em que o label e o valor não estão em
         células separadas de forma confiável.
+
+        :param text: Texto no qual será feita a busca por valores monetários.
+        :param span_start: Índice inicial do label no texto.
+        :param span_end: Índice final do label no texto.
+        :return: Valor monetário mais próximo do span, ou None se não houver candidato.
         """
         money_matches = list(re.finditer(MONEY_RE, text, re.IGNORECASE))
         if not money_matches:
@@ -622,6 +655,7 @@ class LaborClaimCalculationExtractor:
 
         before_matches = [match for match in money_matches if match.end() <= span_start]
         if before_matches:
+            # Neste helper, prioriza valores imediatamente antes do span (comportamento legado).
             closest_before = min(
                 before_matches, key=lambda match: span_start - match.end()
             )
@@ -651,6 +685,7 @@ class LaborClaimCalculationExtractor:
         if not money_matches:
             return None
 
+        # Para linhas de cálculo, o último valor tende a ser o total calculado.
         return to_decimal(money_matches[-1].group(0))
 
     @staticmethod
@@ -661,6 +696,7 @@ class LaborClaimCalculationExtractor:
         :return: Último valor monetário encontrado, ou None.
         """
         for cell in reversed(cells):
+            # Varre da direita para a esquerda para capturar totais normalmente posicionados no fim.
             money_match = re.search(MONEY_RE, cell, re.IGNORECASE)
             if money_match:
                 return to_decimal(money_match.group(0))
@@ -669,13 +705,11 @@ class LaborClaimCalculationExtractor:
 
     def _extract_line_cells(self, raw_line: str) -> list[str]:
         """
-        Extrai as células de uma linha de tabela em formato Markdown, removendo tags HTML e normalizando espaços.
-        :param raw_line: A linha bruta da tabela em formato Markdown, que pode conter tags HTML e formatação.
-         Exemplo de linha: "| **TOTAL DEVIDO PELO RECLAMADO** | R$ 1.234,56 |"
-        :return: Uma lista de strings representando as células da linha, com tags HTML removidas e espaços normalizados.
-         Exemplo de retorno: ["TOTAL DEVIDO PELO RECLAMADO", "R$ 1.234,56"]
-         Observação: Se a linha não for uma linha de tabela válida (não começar com "|" ou for uma linha de separação),
-         retorna uma lista vazia.
+        Extrai células de uma linha Markdown de tabela.
+
+        :param raw_line: Linha bruta da tabela (ex.: "| A | B |" ou linha separadora).
+        :return: Lista de células quando a linha representa dados; lista vazia para
+            linhas não tabulares ou separadores de cabeçalho.
         """
         line = raw_line.strip()
         if not line.startswith("|") or self.separator_re.match(line):
@@ -701,12 +735,14 @@ class LaborClaimCalculationExtractor:
         :return: Valor de FGTS convertido para Decimal, ou None se não for encontrado.
         """
         if (exact_fgts_value := self._extract_exact_fgts_line_value(text)) is not None:
+            # Melhor caso: label exato "FGTS" evita confusão com linhas intermediárias.
             return exact_fgts_value
 
         total_devido_ao_autor_fgts = self._extract_fgts_from_total_devido_ao_autor(text)
         if total_devido_ao_autor_fgts is not None:
             return total_devido_ao_autor_fgts
 
+        # Último fallback para demonstrativos consolidados (Anexo IX).
         return self._extract_fgts_from_anexo_ix_total(text)
 
     def _extract_irrf_field_value(self, text: str) -> Decimal | None:
@@ -726,6 +762,7 @@ class LaborClaimCalculationExtractor:
         def resolve_candidate(
             value: Decimal | None, *, allow_zero: bool = False
         ) -> Decimal | None:
+            # Padroniza sinal e controla quando zero é aceitável como valor final.
             if value is None:
                 return None
 
@@ -749,6 +786,7 @@ class LaborClaimCalculationExtractor:
             if value is not None:
                 return value
 
+        # Em alguns layouts o único valor confiável está no bloco do demonstrativo.
         demonstrativo_total = resolve_candidate(
             self._extract_irrf_demonstrativo_total_devido(text), allow_zero=True
         )
@@ -788,6 +826,7 @@ class LaborClaimCalculationExtractor:
 
         for demonstrativo_match in demonstrativo_block_re.finditer(text):
             demonstrativo_body = demonstrativo_match.group("body")
+            # Busca "TOTAL DEVIDO" apenas dentro do escopo do demonstrativo de IR.
             for total_devido_match in total_devido_re.finditer(demonstrativo_body):
                 value = self._extract_money_closest_to_span(
                     demonstrativo_body,
@@ -820,6 +859,7 @@ class LaborClaimCalculationExtractor:
             if not re.search(r"ANEXO\s+IX", line, re.IGNORECASE):
                 continue
 
+            # Em linhas de resumo, escolhe o último "TOTAL" monetário como valor final do anexo.
             total_matches = list(
                 re.finditer(rf"\bTOTAL\b\s*({MONEY_RE})", line, re.IGNORECASE)
             )
@@ -921,12 +961,14 @@ class LaborClaimCalculationExtractor:
     ) -> LaborClaimState:
         """
         Tenta extrair os campos de interesse diretamente do texto normalizado da página.
+
         :param text: Texto normalizado da página.
         :param labor_claim_state: Estado atual de informações extraídas.
         :param matched_fields: Campos pendentes cujos labels aparecem na página.
-        :return: Dicionário atualizado.
+        :return: Estado atualizado com os campos extraídos do texto.
         """
         for field_name in list(matched_fields):
+            # Só tenta campos pendentes; IRRF com 0 pode ser refinado em páginas seguintes.
             if labor_claim_state.has(field_name) and not self._is_soft_value_for_irrf(
                 field_name, getattr(labor_claim_state, field_name)
             ):
@@ -950,6 +992,7 @@ class LaborClaimCalculationExtractor:
         :return: Valor extraído como Decimal, ou None.
         """
         if special_extractor := self.special_field_extractors.get(field_name):
+            # Encaminha para extratores especializados quando há regra dedicada para o campo.
             return special_extractor(text)
 
         field_pattern = self.field_pattern_map.get(field_name)
@@ -994,6 +1037,7 @@ class LaborClaimCalculationExtractor:
             candidates: list[tuple[int, str]] = []
 
             for money_match in money_matches[::-1]:
+                # Ranqueia candidatos pela menor distância até o label na mesma linha, com preferencia da direita
                 if money_match.end() <= label_match.start():
                     distance = label_match.start() - money_match.end()
                 elif money_match.start() >= label_match.end():
@@ -1024,6 +1068,7 @@ if __name__ == "__main__":
         ]
         pdf_files = list(data_path.glob("*.pdf"))
         for pdf_file in pdf_files:
+            # Permite rodar lote pulando casos específicos durante depuração.
             if any(ignored in str(pdf_file) for ignored in ignore):
                 continue
             print(extractor.extract(pdf_file))
