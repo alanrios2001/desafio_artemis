@@ -26,6 +26,7 @@ async def produce_pdfs():
 
     pdfs = list(PDF_PATH.glob("*.pdf"))
     for pdf_path in pdfs:
+        # pode ser verificação de jobs esperando para executar no banco, etc
         if pdf_path.name not in extracted_data:
             await queue.put(pdf_path)
 
@@ -45,6 +46,7 @@ async def consume_worker():
             break
 
         result = await asyncio.to_thread(extractor.extract, pdf)
+        # pode ser inserção no banco, etc
         extracted_data[pdf.name] = result
         queue.task_done()
 

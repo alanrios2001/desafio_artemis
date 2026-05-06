@@ -1,0 +1,4 @@
+{"case_name":"irrf_valor_total_direto","text":"RESUMO TRIBUTARIO\nVALOR TOTAL DO IRRF 180.583,84\nFIM","expected":"180583.84"}
+{"case_name":"irrf_demonstrativo_total_devido","text":"DEMONSTRATIVO DE IMPOSTO DE RENDA\nBASE DE CALCULO PRINCIPAL\nALIQUOTA LEGAL\nTOTAL DEVIDO 982.437,98\nDEMONSTRATIVO DE CUSTAS","expected":"982437.98"}
+{"case_name":"imposto_renda_a_recolher","text":"INFORMACOES FISCAIS\nIMPOSTO DE RENDA A RECOLHER 1.524,83\nOBSERVACOES","expected":"1524.83"}
+{"case_name":"irrf_zero_explicito","text":"RELATORIO\nIRRF DO RECLAMANTE 0,00\nFIM","expected":"0.00"}

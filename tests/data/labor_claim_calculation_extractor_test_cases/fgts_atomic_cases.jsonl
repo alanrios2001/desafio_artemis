@@ -1,0 +1,5 @@
+{"case_name":"fgts_label_exato","text":"Resumo de valores\nFGTS 21.621,44\nFim do resumo","expected":"21621.44"}
+{"case_name":"fgts_total_devido_ao_autor_com_juros_fgts","text":"APURACAO FGTS\nFGTS PRINCIPAL E JUROS FGTS APURADOS\nTOTAL DEVIDO AO AUTOR 1.000,00 2.000,00 3.000,00 4.000,00 5.000,00 6.000,00\nENCERRAMENTO","expected":"4000.00"}
+{"case_name":"fgts_anexo_ix_total_consolidado","text":"ANEXO IX - FGTS + MULTA 40% Selic Simples 15,93% 68.596,52 Total 499.208,72","expected":"499208.72"}
+{"case_name":"fgts_sem_valor_final_confiavel","text":"FGTS 8% 6.886,94 15.650,90 8.763,96\nMULTA SOBRE FGTS 40% 2.607,33 5.970,54 3.363,21","expected":null}
+
