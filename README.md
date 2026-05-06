@@ -97,7 +97,7 @@ diferenciar de quando o valor do campo é 0.
 Regras específicas:
 
 Existem regras específicas para 3 campos, que possuem casos de borda mais complexos,
-que são: "liquido_devido_ao_advogado", "valor_do_fgts", "contribuicao_social_sobre_salarios_devido".
+que são: "liquido_devido_ao_advogado", "valor_do_fgts", "contribuicao_social_sobre_salarios_devido", "valor_do_irrf".
 
 "liquido_devido_ao_advogado": Nesse caso, a descrição dos honorarios na maioria dos casos aparece no Demonstrativo
 de honorários, que engloba varios tipos de honorários, como o honorário advocatício/sucubencial, pericial, etc. O valor
@@ -116,6 +116,9 @@ composta com varias colunas e a linha com o valor total ter o label "TOTAL DEVID
 "contribuição_social_sobre_salarios_devido": Esse campo possui casos de borda mais simples, mas vale a pena
 separa-lo. Os valores sempre estarão na mesma linha do rótulo, mas existem casos em que o valor aparece
 separado entre o reclamado e a reclamada, necessitando de uma soma.
+
+"valor_do_irrf": O valor do IRRF tem casos de borda mais simples, mas existem casos em que o valor aparecem
+em blocos de Demonstrativo, e diferentes labels.
 
 
 
