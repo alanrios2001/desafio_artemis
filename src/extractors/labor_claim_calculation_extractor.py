@@ -246,11 +246,12 @@ class LaborClaimCalculationExtractor:
                     normalized_text, labor_claim_state, pattern_matches
                 )
 
-                # usa tabelas apenas como fallback para o que ainda não foi encontrado
-                if pending_and_matches_result := self._get_pending_patterns_and_matches(
+                _, remaining_pattern_matches = self._get_pending_patterns_and_matches(
                     labor_claim_state, normalized_text
-                ):
-                    _, remaining_pattern_matches = pending_and_matches_result
+                )
+
+                # usa tabelas apenas como fallback para o que ainda não foi encontrado
+                if remaining_pattern_matches:
                     try:
                         page_tables: list[str] = []
                         for page in pages_chunk:
@@ -293,7 +294,6 @@ class LaborClaimCalculationExtractor:
             (field, pattern)
             for field, pattern in self.field_pattern_map.items()
             if not labor_claim_state.has(field)
-            or self._is_soft_value_for_irrf(field, getattr(labor_claim_state, field))
         ]
 
         matched_fields = [
@@ -1030,6 +1030,6 @@ if __name__ == "__main__":
                 continue
             print(extractor.extract(pdf_file))
 
-    # print(extractor.extract(data_path / "0021118-39.2018.5.04.0010.pdf"))
+    print(extractor.extract(data_path / "0000380-42.2023.5.05.0005.pdf"))
 
-    run_all_pdfs()
+    # run_all_pdfs()
