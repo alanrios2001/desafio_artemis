@@ -104,18 +104,13 @@ class LaborClaimCalculationExtractor:
                 r"|HONORARIOS\s+DE\s+SUCUMBENCIA)"
             ),
             "valor_de_irrf": (
-                r"(?:IRRF\s+DEVIDO\s+PELO\s+RECLAMANTE"
-                r"|IRRF\s+DO\s+RECLAMANTE"
+                r"(?:IRRF\s+DO\s+RECLAMANTE"
                 r"|IMPOSTO\s+DE\s+RENDA\s+A\s+RECOLHER"
                 r"|VALOR\s+TOTAL\s+DO\s+IRRF"
                 r"|IMPOSTO\s+DE\s+RENDA"
                 r"|DEMONSTRATIVO\s+DE\s+IMPOSTO\s+DE\s+RENDA)"
             ),
-            "valor_do_fgts": (
-                r"(?:FGTS"
-                r"|DIFERENCA\s+DE\s+FGTS\s+DO\s+CONTRATO"
-                r"|TOTAL\s+DO\s+FGTS)"
-            ),
+            "valor_do_fgts": (r"(?:FGTS" r"|DIFERENCA\s+DE\s+FGTS\s+DO\s+CONTRATO)"),
         }
         self.special_field_extractors: dict[
             FieldName, Callable[[str], Decimal | None]

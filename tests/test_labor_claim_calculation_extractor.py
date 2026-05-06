@@ -51,7 +51,7 @@ class TestLaborClaimCalculationExtractor(unittest.TestCase):
         self.assertEqual(Decimal("4557.76"), extracted)
 
     def test_full_extraction(self):
-        pdf_files_path = Path(__file__).parents[1] / "data" / "Documentos"
+        pdf_files_path = self.data_path / "Documentos"
         with open(
             self.data_path / "full_extraction_test_cases.jsonl",
             "r",
