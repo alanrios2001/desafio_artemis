@@ -104,9 +104,10 @@ class LaborClaimCalculationExtractor:
             "valor_de_irrf": (
                 r"(?:IRRF\s+DEVIDO\s+PELO\s+RECLAMANTE"
                 r"|IRRF\s+DO\s+RECLAMANTE"
-                r"|IRRF\s+SOBRE\s+HONORARIOS(?:\s+PARA(?:\s+.+)?)?"
+                r"|IMPOSTO\s+DE\s+RENDA\s+A\s+RECOLHER"
                 r"|VALOR\s+TOTAL\s+DO\s+IRRF"
-                r"|IMPOSTO\s+DE\s+RENDA)"
+                r"|IMPOSTO\s+DE\s+RENDA"
+                r"|DEMONSTRATIVO\s+DE\s+IMPOSTO\s+DE\s+RENDA)"
             ),
             "valor_do_fgts": (
                 r"(?:FGTS"
@@ -120,7 +121,13 @@ class LaborClaimCalculationExtractor:
             "liquido_devido_ao_advogado": self._extract_honorarios_demonstrativo_total,
             "valor_do_fgts": self._extract_fgts_field_value,
             "contribuicao_social_sobre_salarios_devido": self._extract_contribuicao_social_value,
+            "valor_de_irrf": self._extract_irrf_field_value,
         }
+
+    @staticmethod
+    def _is_soft_value_for_irrf(field_name: FieldName, value: Decimal | None) -> bool:
+        """Permite revisar IRRF quando o valor atual é 0,00 e pode haver valor definitivo depois."""
+        return field_name == "valor_de_irrf" and value == Decimal("0")
 
     def extract(self, pdf_path: str | Path) -> LaborClaimInfo:
         """
@@ -232,6 +239,7 @@ class LaborClaimCalculationExtractor:
             (field, pattern)
             for field, pattern in self.field_pattern_map.items()
             if not labor_claim_state.has(field)
+            or self._is_soft_value_for_irrf(field, getattr(labor_claim_state, field))
         ]
 
         matched_fields = [
@@ -260,7 +268,11 @@ class LaborClaimCalculationExtractor:
             if not matched_fields:
                 break
             for field_name in matched_fields:
-                if labor_claim_state.has(field_name):
+                if labor_claim_state.has(
+                    field_name
+                ) and not self._is_soft_value_for_irrf(
+                    field_name, getattr(labor_claim_state, field_name)
+                ):
                     continue
                 extracted = self._extract_field_value_from_table(
                     normalize_text(table), field_name
@@ -658,6 +670,96 @@ class LaborClaimCalculationExtractor:
 
         return self._extract_fgts_from_anexo_ix_total(text)
 
+    def _extract_irrf_field_value(self, text: str) -> Decimal | None:
+        """
+        Extrai IRRF priorizando labels explícitos e o total do Demonstrativo de Imposto de Renda.
+
+        Ordem de prioridade:
+        1. Labels diretos (VALOR TOTAL DO IRRF, IRRF DO/DEVIDO PELO RECLAMANTE,
+           IMPOSTO DE RENDA A RECOLHER).
+        2. Campo "TOTAL DEVIDO" dentro do bloco "Demonstrativo de Imposto de Renda".
+        3. Label genérico "IMPOSTO DE RENDA" com valor na mesma linha.
+
+        :param text: Texto normalizado da página ou tabela.
+        :return: Valor de IRRF em Decimal (sempre absoluto), ou None.
+        """
+
+        def resolve_candidate(
+            value: Decimal | None, *, allow_zero: bool = False
+        ) -> Decimal | None:
+            if value is None:
+                return None
+
+            normalized_value = abs(value)
+            if normalized_value == Decimal("0") and not allow_zero:
+                return None
+
+            return normalized_value
+
+        high_confidence_patterns = [
+            r"VALOR\s+TOTAL\s+DO\s+IRRF",
+            r"IRRF\s+DEVIDO\s+PELO\s+RECLAMANTE",
+            r"IRRF\s+DO\s+RECLAMANTE",
+        ]
+
+        for label_pattern in high_confidence_patterns:
+            value = resolve_candidate(
+                self._extract_money_on_same_line_as_label(text, label_pattern),
+                allow_zero=True,
+            )
+            if value is not None:
+                return value
+
+        demonstrativo_total = resolve_candidate(
+            self._extract_irrf_demonstrativo_total_devido(text), allow_zero=True
+        )
+        if demonstrativo_total is not None:
+            return demonstrativo_total
+
+        imposto_renda_a_recolher = resolve_candidate(
+            self._extract_money_on_same_line_as_label(
+                text, r"IMPOSTO\s+DE\s+RENDA\s+A\s+RECOLHER"
+            ),
+            allow_zero=True,
+        )
+        if imposto_renda_a_recolher is not None:
+            return imposto_renda_a_recolher
+
+        generic_imposto_renda = resolve_candidate(
+            self._extract_money_on_same_line_as_label(text, r"IMPOSTO\s+DE\s+RENDA"),
+            allow_zero=True,
+        )
+        if generic_imposto_renda is not None:
+            return generic_imposto_renda
+
+        return None
+
+    def _extract_irrf_demonstrativo_total_devido(self, text: str) -> Decimal | None:
+        """
+        Extrai IRRF pelo "TOTAL DEVIDO" dentro do bloco Demonstrativo de Imposto de Renda.
+
+        :param text: Texto normalizado da página ou tabela.
+        :return: Valor do total devido do demonstrativo, ou None.
+        """
+        demonstrativo_block_re = re.compile(
+            r"DEMONSTRATIVO\s+DE\s+IMPOSTO\s+DE\s+RENDA(?P<body>.*?)(?=DEMONSTRATIVO\s+DE\s+|$)",
+            re.IGNORECASE | re.DOTALL,
+        )
+        total_devido_re = re.compile(r"TOTAL\s+DEVIDO", re.IGNORECASE)
+
+        for demonstrativo_match in demonstrativo_block_re.finditer(text):
+            demonstrativo_body = demonstrativo_match.group("body")
+            for total_devido_match in total_devido_re.finditer(demonstrativo_body):
+                value = self._extract_money_closest_to_span(
+                    demonstrativo_body,
+                    total_devido_match.start(),
+                    total_devido_match.end(),
+                )
+                if value is not None:
+                    return value
+
+        return None
+
     @staticmethod
     def _extract_fgts_from_anexo_ix_total(text: str) -> Decimal | None:
         """
@@ -792,7 +894,9 @@ class LaborClaimCalculationExtractor:
         :return: Dicionário atualizado.
         """
         for field_name in list(matched_fields):
-            if labor_claim_state.has(field_name):
+            if labor_claim_state.has(field_name) and not self._is_soft_value_for_irrf(
+                field_name, getattr(labor_claim_state, field_name)
+            ):
                 continue
 
             extracted = self._extract_field_value_from_text(text, field_name)
@@ -891,6 +995,6 @@ if __name__ == "__main__":
                 continue
             print(extractor.extract(pdf_file))
 
-    # print(extractor.extract(data_path / "1001155-11.2025.5.02.0019.pdf"))
+    # print(extractor.extract(data_path / "0020588-37.2021.5.04.0331.pdf"))
 
     run_all_pdfs()
