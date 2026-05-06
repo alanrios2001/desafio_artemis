@@ -43,6 +43,15 @@ cd desafio_artemis
 poetry install
 ```
 
+## Como executar o projeto
+
+```bash
+# Ative o ambiente virtual do Poetry
+poetry shell
+# Execute o script principal
+poetry run python src/main.py
+```
+
 ## Tecnologias e Soluções adotadas.
 
 - **Python**: Linguagem principal para desenvolvimento.

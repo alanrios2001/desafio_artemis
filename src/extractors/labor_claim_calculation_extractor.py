@@ -1013,6 +1013,7 @@ class LaborClaimCalculationExtractor:
 
 
 if __name__ == "__main__":
+    import time
 
     data_path = Path(__file__).parents[2] / "data" / "Documentos"
 
@@ -1030,6 +1031,9 @@ if __name__ == "__main__":
                 continue
             print(extractor.extract(pdf_file))
 
-    print(extractor.extract(data_path / "0000380-42.2023.5.05.0005.pdf"))
+    start = time.time()
+    print(extractor.extract(data_path / "1001298-45.2023.5.02.0059 - Reclamada.pdf"))
+    end = time.time()
+    print(f"Tempo de extração: {end - start:.2f} segundos")
 
     # run_all_pdfs()

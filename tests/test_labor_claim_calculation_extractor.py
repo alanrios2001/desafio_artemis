@@ -1,4 +1,5 @@
 import json
+import time
 import unittest
 
 from decimal import Decimal
@@ -65,7 +66,11 @@ class TestLaborClaimCalculationExtractor(unittest.TestCase):
                 key: Decimal(value) if value else None
                 for key, value in item["expected"].items()
             }
+            start_time = time.time()
             extracted_data = self.extractor.extract(file)
+            end_time = time.time()
+            total_time = end_time - start_time
+            print(item["pdf_name"], total_time, "seconds")
 
             for key, expected_value in expected_data.items():
                 self.assertEqual(expected_value, extracted_data[key])
