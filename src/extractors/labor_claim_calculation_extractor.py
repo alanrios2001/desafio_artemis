@@ -7,6 +7,8 @@ from decimal import Decimal
 from pathlib import Path
 from typing import Callable, Literal, TypedDict, TypeAlias
 
+from pymupdf import Document, Page
+
 from utils.cast_utils import to_decimal
 from utils.general_utils import get_logger
 from utils.text_utils import normalize_text, normalize_html_text
@@ -129,12 +131,39 @@ class LaborClaimCalculationExtractor:
         """Permite revisar IRRF quando o valor atual é 0,00 e pode haver valor definitivo depois."""
         return field_name == "valor_de_irrf" and value == Decimal("0")
 
+    @staticmethod
+    def _reorder_document_pages(document: Document) -> list[Page]:
+        """
+        Reordena as paginas do documento, colocando as 4 primeiras paginas seguido das 9 ultimas seguido do restante
+        pois a maioria dos campos aparecem nas primeiras ou últimas páginas.
+        :param document: objeto documento contendo as páginas do pdf.
+        :return: lista de paginas reordenada
+        """
+        split_len = 9
+        total_pages = len(document)
+        if total_pages == 0:
+            return []
+
+        first_indices = list(range(min(split_len, total_pages)))
+        last_indices = list(range(max(total_pages - split_len, 0), total_pages))
+        middle_indices = [
+            i for i in range(total_pages) if i not in set(first_indices + last_indices)
+        ]
+
+        ordered_indices = (
+            first_indices
+            + [i for i in last_indices if i not in first_indices]
+            + middle_indices
+        )
+
+        return [document[i] for i in ordered_indices]
+
     def extract(self, pdf_path: str | Path) -> LaborClaimInfo:
         """
         Extrai as informações contábeis navegando pelas paginas, a partir da extração de texto e tabelas do pdf,
          organizando por página.
         :param pdf_path: Caminho para o arquivo PDF a ser processado.
-        :return:
+        :return: Dicionario contendo os campos extraídos
         """
         pdf_path = Path(pdf_path)
         pdf_name = pdf_path.name
@@ -152,18 +181,30 @@ class LaborClaimCalculationExtractor:
             f"[LaborClaimCalculationExtractor][extract] PDF:{pdf_name}\n\tPercorrendo paginas em busca"
             " dos campos de interesse."
         )
-        with fitz.open(pdf_path) as document:
-            for page_index, page in enumerate(document, start=1):
-                text = page.get_text("xhtml", sort=True)
-                normalized_text = normalize_html_text(text)
 
-                if not normalized_text:
+        with fitz.open(pdf_path) as document:
+            document = self._reorder_document_pages(document)
+            total_pages = len(document)
+            for chunk_start in range(0, total_pages, 3):
+                chunk_end = min(chunk_start + 3, total_pages)
+                pages_chunk = [document[i] for i in range(chunk_start, chunk_end)]
+
+                normalized_parts: list[str] = []
+                for page in pages_chunk:
+                    text = page.get_text("xhtml", sort=True)
+                    normalized_text = normalize_html_text(text)
+                    if normalized_text:
+                        normalized_parts.append(normalized_text)
+
+                if not normalized_parts:
                     logger.debug(
                         f"[LaborClaimCalculationExtractor][extract] PDF:{pdf_name}\n\t"
-                        f"Página {page_index} do sem texto extraído. "
-                        "Pulando para a próxima página."
+                        f"Páginas {chunk_start + 1}-{chunk_end} sem texto extraído. "
+                        "Pulando para o próximo bloco."
                     )
                     continue
+
+                normalized_text = "\n".join(normalized_parts)
 
                 # melhora eficiência verificando labels pendentes antes de extrair tabelas, e das pendentes
                 # quais aparecem no texto da página, para decidir se vale a pena tentar extrair tabelas daquela página
@@ -176,7 +217,7 @@ class LaborClaimCalculationExtractor:
                 if not pending_patterns:
                     logger.info(
                         f"[LaborClaimCalculationExtractor][extract] PDF:{pdf_name}\n\t"
-                        f"Extração concluída, interrompi na página {page_index}."
+                        f"Extração concluída, interrompi na página {chunk_end}."
                     )
                     break
 
@@ -184,8 +225,8 @@ class LaborClaimCalculationExtractor:
                 if not pattern_matches:
                     logger.debug(
                         f"[LaborClaimCalculationExtractor][extract] PDF:{pdf_name}\n\t"
-                        f"Página {page_index} não contém labels pendentes. "
-                        "Pulando para a próxima página."
+                        f"Bloco de páginas {chunk_start + 1}-{chunk_end} não contém labels pendentes. "
+                        "Pulando para o próximo bloco."
                     )
                     continue
 
@@ -200,16 +241,18 @@ class LaborClaimCalculationExtractor:
                 ):
                     _, remaining_pattern_matches = pending_and_matches_result
                     try:
-                        page_tables = [
-                            table.to_markdown() for table in page.find_tables()
-                        ]
+                        page_tables: list[str] = []
+                        for page in pages_chunk:
+                            page_tables.extend(
+                                table.to_markdown() for table in page.find_tables()
+                            )
                         self._extract_fields_from_tables(
                             page_tables, labor_claim_state, remaining_pattern_matches
                         )
                     except Exception as e:
                         logger.warning(
                             f"[LaborClaimCalculationExtractor][extract] PDF:{pdf_name}\n\t"
-                            f"Erro ao extrair tabelas da página {page_index}: {e}"
+                            f"Erro ao extrair tabelas do bloco {chunk_start + 1}-{chunk_end}: {e}"
                         )
 
             remaining_fields = labor_claim_state.missing_fields()
@@ -995,6 +1038,6 @@ if __name__ == "__main__":
                 continue
             print(extractor.extract(pdf_file))
 
-    # print(extractor.extract(data_path / "0020588-37.2021.5.04.0331.pdf"))
+    print(extractor.extract(data_path / "0021118-39.2018.5.04.0010.pdf"))
 
-    run_all_pdfs()
+    # run_all_pdfs()

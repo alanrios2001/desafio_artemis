@@ -69,7 +69,8 @@ criado um método .to_dict() para converter o objeto em um dicionário, requisit
 
 Fluxo genérico:
 
-O PDF é iterado página a página, tem seu texto extraído em xhtml decodificado e normalizado.
+O PDF é iterado em chunks, de forma a evitar tabelas quebradas e problemas nas extrações dos valores,
+tem seu texto extraído em xhtml decodificado e normalizado.
 O Texto passar por um método para identificar os rótulos e valores ali presentes, que retorna os campos pendentes
 de extração e os campos pendentes que tiveram o regex com match na página.
 Caso existam campos pendentes com regex match, é feita uma lógica de extração a partir do xhtml, é tentado
@@ -85,7 +86,8 @@ e o valor mais próximo é selecionado como o valor do rótulo, o desempate é o
 linha do rótulo.
 
 Após a primeira etapa, é verificado se os campos de match ainda estão pendentes, caso estejam, o fluxo vai para fallback
-e tenta extrair os campos a partir das tabelas, utilizando o método .find_tables() do pymupdf, e convertendo as tabelas
+e tenta extrair os campos a partir das tabelas, que tem o chunk iterado pagia a pagina, utilizando o método
+.find_tables() do pymupdf, e convertendo as tabelas
 em markdown com o método .to_markdown(), e utilizando regex para identificar os campos a partir do markdown da tabela,
 processando linha a linha, selecionando os campos que possuem match com os campos pendentes, e selecionando 
 o valor a direita do campo.
