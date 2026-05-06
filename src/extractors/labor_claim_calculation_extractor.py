@@ -134,27 +134,38 @@ class LaborClaimCalculationExtractor:
     @staticmethod
     def _reorder_document_pages(document: Document) -> list[Page]:
         """
-        Reordena as paginas do documento, colocando as 4 primeiras paginas seguido das 9 ultimas seguido do restante
-        pois a maioria dos campos aparecem nas primeiras ou últimas páginas.
-        :param document: objeto documento contendo as páginas do pdf.
-        :return: lista de paginas reordenada
+        Reordena as páginas alternando blocos do início e do fim do documento.
+
+        Exemplo com bloco de 9:
+        - páginas 1-9
+        - últimas 9
+        - próximas 9 do início
+        - próximas 9 do fim
+        - etc.
+
+        :param document: Objeto documento contendo as páginas do PDF.
+        :return: Lista de páginas reordenada.
         """
         split_len = 9
         total_pages = len(document)
         if total_pages == 0:
             return []
 
-        first_indices = list(range(min(split_len, total_pages)))
-        last_indices = list(range(max(total_pages - split_len, 0), total_pages))
-        middle_indices = [
-            i for i in range(total_pages) if i not in set(first_indices + last_indices)
-        ]
+        ordered_indices: list[int] = []
+        left = 0
+        right = total_pages
 
-        ordered_indices = (
-            first_indices
-            + [i for i in last_indices if i not in first_indices]
-            + middle_indices
-        )
+        while left < right:
+            left_end = min(left + split_len, right)
+            ordered_indices.extend(range(left, left_end))
+            left = left_end
+
+            if left >= right:
+                break
+
+            right_start = max(right - split_len, left)
+            ordered_indices.extend(range(right_start, right))
+            right = right_start
 
         return [document[i] for i in ordered_indices]
 
