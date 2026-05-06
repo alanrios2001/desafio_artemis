@@ -13,7 +13,12 @@
 │   ├── extractors/
 │       ├──labor_claim_calculation_extractor.py / ...
 │           └── Extração de dados a partir de PDFs, com foco em cálculos trabalhistas
-└── arquivos de dados grandes (json/jsonl/zip/rar/pdf)
+│   └── main.py
+├── tests/
+│   └── test_labor_claim_calculation_extractor.py
+│   ├── data/
+│       └──Casos de teste para os testes unitários separado por pasta.
+└── Raiz do projeto com readme, pastas de configuração, pyproject.toml, etc.
 ```
 
 Stack principal: Python + Poetry + Dynaconf + pymupdf

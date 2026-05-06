@@ -188,9 +188,9 @@ class LaborClaimCalculationExtractor:
                 )
 
                 # usa tabelas apenas como fallback para o que ainda não foi encontrado
-                if (pending_and_matches_result := self._get_pending_patterns_and_matches(
+                if pending_and_matches_result := self._get_pending_patterns_and_matches(
                     labor_claim_state, normalized_text
-                )):
+                ):
                     _, remaining_pattern_matches = pending_and_matches_result
                     try:
                         page_tables = [

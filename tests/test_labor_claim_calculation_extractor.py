@@ -62,7 +62,8 @@ class TestLaborClaimCalculationExtractor(unittest.TestCase):
             file = pdf_files_path / item["pdf_name"]
 
             expected_data = {
-                key: Decimal(value) for key, value in item["expected"].items() if value
+                key: Decimal(value) if value else None
+                for key, value in item["expected"].items()
             }
             extracted_data = self.extractor.extract(file)
 
