@@ -4,6 +4,7 @@ import os
 from asyncio import Queue
 from pathlib import Path
 
+from config import settings
 from src.extractors.labor_claim_calculation_extractor import (
     LaborClaimCalculationExtractor,
 )
@@ -14,6 +15,7 @@ logger = get_logger(__name__)
 
 PDF_PATH = Path(__file__).parents[1] / "data" / "Documentos"
 NUM_CONSUMER_WORKERS = int((max(os.cpu_count() or 0, 1) / 2) - 2)
+DEBUG = settings.DEBUG
 
 queue: Queue = Queue()
 extractor = LaborClaimCalculationExtractor()
@@ -63,8 +65,9 @@ async def main():
     )
     await asyncio.gather(*tasks)
 
-    for key, data in extracted_data.items():
-        print(f"{key}: {data}")
+    if DEBUG:
+        for key, data in extracted_data.items():
+            print(f"{key}: {data}")
 
 
 if __name__ == "__main__":
