@@ -66,6 +66,17 @@ class LaborClaimState:
 
 
 class LaborClaimCalculationExtractor:
+    """
+    Classe responsável por extrair informações de cálculos de processos trabalhistas.\n
+    Campos a serém extraídos:\n
+    - total_devido_pelo_reclamado
+    - contribuicao_social_sobre_salarios_devido
+    - liquido_devido_ao_reclamante
+    - liquido_devido_ao_advogado
+    - valor_de_irrf
+    - valor_do_fgts
+    """
+
     def __init__(self) -> None:
         self.page_chunk_size = 3
         self.label_money_window = 150
