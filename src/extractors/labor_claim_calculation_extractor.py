@@ -101,9 +101,10 @@ class LaborClaimCalculationExtractor:
                 r"|HONORARIOS\s+DE\s+SUCUMBENCIA)"
             ),
             "valor_de_irrf": (
-                r"(?:IRRF\s+DO\s+RECLAMANTE"
+                r"(?:VALOR\s+TOTAL\s+DO\s+IRRF"
+                r"|IRRF\s+DEVIDO\s+PELO\s+RECLAMANTE"
+                r"|IRRF\s+DO\s+RECLAMANTE"
                 r"|IMPOSTO\s+DE\s+RENDA\s+A\s+RECOLHER"
-                r"|VALOR\s+TOTAL\s+DO\s+IRRF"
                 r"|IMPOSTO\s+DE\s+RENDA"
                 r"|DEMONSTRATIVO\s+DE\s+IMPOSTO\s+DE\s+RENDA)"
             ),
@@ -231,14 +232,6 @@ class LaborClaimCalculationExtractor:
         """
         normalized_text = self._normalize_pages_chunk_text(pages_chunk)
 
-        if not normalized_text:
-            logger.debug(
-                f"[LaborClaimCalculationExtractor][extract] PDF:{pdf_name}\n\t"
-                f"Páginas {chunk_start + 1}-{chunk_end} sem texto extraído. "
-                "Pulando para o próximo bloco."
-            )
-            return False
-
         # Melhora eficiência tentando apenas campos pendentes com label + valor monetário próximo.
         pending_patterns, pattern_matches = self._get_pending_patterns_and_matches(
             labor_claim_state, normalized_text
@@ -273,6 +266,7 @@ class LaborClaimCalculationExtractor:
         :return: Texto normalizado do bloco, vazio quando não houver conteúdo útil.
         """
         normalized_parts: list[str] = []
+        # Carrega paginas e normaliza xhtml
         for page in pages_chunk:
             text = page.get_text("xhtml", sort=True)
             normalized_text = normalize_html_text(text)
@@ -280,6 +274,59 @@ class LaborClaimCalculationExtractor:
                 normalized_parts.append(normalized_text)
 
         return "\n".join(normalized_parts)
+
+    def _extract_fields_from_text(
+        self,
+        text: str,
+        labor_claim_state: LaborClaimState,
+        matched_fields: list[FieldName],
+    ) -> LaborClaimState:
+        """
+        Tenta extrair os campos de interesse diretamente do texto normalizado da página.
+
+        :param text: Texto normalizado da página.
+        :param labor_claim_state: Estado atual de informações extraídas.
+        :param matched_fields: Campos pendentes cujos labels aparecem na página.
+        :return: Estado atualizado com os campos extraídos do texto.
+        """
+        for field_name in list(matched_fields):
+            # Só tenta campos pendentes; IRRF com 0 pode ser refinado em páginas seguintes.
+            if labor_claim_state.has(field_name) and not self._is_soft_value_for_irrf(
+                field_name, getattr(labor_claim_state, field_name)
+            ):
+                continue
+
+            extracted = self._extract_field_value_from_text(text, field_name)
+
+            if extracted is not None:
+                labor_claim_state.set(field_name, extracted)
+                matched_fields.remove(field_name)
+
+        return labor_claim_state
+
+    def _extract_field_value_from_text(
+        self, text: str, field_name: FieldName
+    ) -> Decimal | None:
+        """
+        Extrai o valor de um campo diretamente do texto normalizado da página.
+        :param text: Texto normalizado da página.
+        :param field_name: Nome do campo desejado.
+        :return: Valor extraído como Decimal, ou None.
+        """
+        if special_extractor := self.special_field_extractors.get(field_name):
+            # Encaminha para extratores especializados quando há regra dedicada para o campo.
+            return special_extractor(text)
+
+        field_pattern = self.field_pattern_map.get(field_name)
+        if not field_pattern:
+            return None
+
+        extracted_value = self._extract_money_on_same_line_as_label(text, field_pattern)
+
+        if extracted_value is not None and field_name == "valor_de_irrf":
+            return abs(extracted_value)
+
+        return extracted_value
 
     @staticmethod
     def _has_money_near_label(text: str, label_pattern: str, window: int) -> bool:
@@ -305,6 +352,7 @@ class LaborClaimCalculationExtractor:
     ) -> tuple[list[tuple[FieldName, str]], list[FieldName]]:
         """
         Calcula campos pendentes e quais labels desses campos aparecem no texto.
+        Evita entrar em métodos com processamento pesado sem necessidade.
 
         :param labor_claim_state: Estado atual com campos já preenchidos.
         :param text: Texto normalizado do bloco de páginas.
@@ -342,7 +390,7 @@ class LaborClaimCalculationExtractor:
         blocks = self._extract_honorarios_due_blocks(text)
         if not blocks:
             # Se não há demonstrativo estruturado, cai para heurísticas de layouts resumidos.
-            return self._extract_honorarios_non_demonstrativo_total(text)
+            return self._extract_honorarios_sem_demonstrativo_total(text)
 
         total = Decimal("0")
         found_value = False
@@ -365,9 +413,9 @@ class LaborClaimCalculationExtractor:
         if found_value:
             return total
 
-        return self._extract_honorarios_non_demonstrativo_total(text)
+        return self._extract_honorarios_sem_demonstrativo_total(text)
 
-    def _extract_honorarios_non_demonstrativo_total(self, text: str) -> Decimal | None:
+    def _extract_honorarios_sem_demonstrativo_total(self, text: str) -> Decimal | None:
         """
         Extrai honorários quando o PDF não contém "Demonstrativo de Honorários".
 
@@ -456,7 +504,7 @@ class LaborClaimCalculationExtractor:
         if not before_matches:
             return None
 
-        # Sem candidato à direita, usa o valor imediatamente anterior ao label.
+        # Sem candidato à direita, usa o valor anterior ao label.
         closest_before = min(before_matches, key=lambda match: span_start - match.end())
         return to_decimal(closest_before.group(0))
 
@@ -628,6 +676,7 @@ class LaborClaimCalculationExtractor:
                 continue
 
             money_matches = list(re.finditer(MONEY_RE, line, re.IGNORECASE))
+            # todo hardcoded, somente esse caso dessa maneira no universo de pdf's, necessario generalizar?
             if len(money_matches) < 6:
                 continue
 
@@ -640,64 +689,52 @@ class LaborClaimCalculationExtractor:
         Extrai IRRF priorizando labels explícitos e o total do Demonstrativo de Imposto de Renda.
 
         Ordem de prioridade:
-        1. Labels diretos (VALOR TOTAL DO IRRF, IRRF DO/DEVIDO PELO RECLAMANTE,
-           IMPOSTO DE RENDA A RECOLHER).
+        1. Labels diretos de alta confiança (VALOR TOTAL DO IRRF, IRRF DO/DEVIDO PELO RECLAMANTE).
         2. Campo "TOTAL DEVIDO" dentro do bloco "Demonstrativo de Imposto de Renda".
-        3. Label genérico "IMPOSTO DE RENDA" com valor na mesma linha.
+        3. Labels fallback na mesma linha (IMPOSTO DE RENDA A RECOLHER e IMPOSTO DE RENDA).
 
         :param text: Texto normalizado da página.
         :return: Valor de IRRF em Decimal (sempre absoluto), ou None.
         """
 
-        def resolve_candidate(
-            value: Decimal | None, *, allow_zero: bool = False
-        ) -> Decimal | None:
+        def resolve_candidate(value: Decimal | None) -> Decimal | None:
             # Padroniza sinal e controla quando zero é aceitável como valor final.
             if value is None:
                 return None
 
-            normalized_value = abs(value)
-            if normalized_value == Decimal("0") and not allow_zero:
-                return None
+            return abs(value)
 
-            return normalized_value
-
-        high_confidence_patterns = [
+        high_confidence_patterns = (
             r"VALOR\s+TOTAL\s+DO\s+IRRF",
             r"IRRF\s+DEVIDO\s+PELO\s+RECLAMANTE",
             r"IRRF\s+DO\s+RECLAMANTE",
-        ]
+        )
 
         for label_pattern in high_confidence_patterns:
             value = resolve_candidate(
-                self._extract_money_on_same_line_as_label(text, label_pattern),
-                allow_zero=True,
+                self._extract_money_on_same_line_as_label(text, label_pattern)
             )
             if value is not None:
                 return value
 
         # Em alguns layouts o único valor confiável está no bloco do demonstrativo.
         demonstrativo_total = resolve_candidate(
-            self._extract_irrf_demonstrativo_total_devido(text), allow_zero=True
+            self._extract_irrf_demonstrativo_total_devido(text)
         )
         if demonstrativo_total is not None:
             return demonstrativo_total
 
-        imposto_renda_a_recolher = resolve_candidate(
-            self._extract_money_on_same_line_as_label(
-                text, r"IMPOSTO\s+DE\s+RENDA\s+A\s+RECOLHER"
-            ),
-            allow_zero=True,
+        fallback_same_line_patterns = (
+            r"IMPOSTO\s+DE\s+RENDA\s+A\s+RECOLHER",
+            r"IMPOSTO\s+DE\s+RENDA",
         )
-        if imposto_renda_a_recolher is not None:
-            return imposto_renda_a_recolher
 
-        generic_imposto_renda = resolve_candidate(
-            self._extract_money_on_same_line_as_label(text, r"IMPOSTO\s+DE\s+RENDA"),
-            allow_zero=True,
-        )
-        if generic_imposto_renda is not None:
-            return generic_imposto_renda
+        for label_pattern in fallback_same_line_patterns:
+            value = resolve_candidate(
+                self._extract_money_on_same_line_as_label(text, label_pattern)
+            )
+            if value is not None:
+                return value
 
         return None
 
@@ -728,8 +765,7 @@ class LaborClaimCalculationExtractor:
 
         return None
 
-    @staticmethod
-    def _extract_fgts_from_anexo_ix_total(text: str) -> Decimal | None:
+    def _extract_fgts_from_anexo_ix_total(self, text: str) -> Decimal | None:
         """
         Extrai FGTS do resumo "Anexo IX - FGTS + Multa 40%" quando houver total final.
 
@@ -742,7 +778,7 @@ class LaborClaimCalculationExtractor:
         if not re.search(r"ANEXO\s+IX", text, re.IGNORECASE):
             return None
 
-        if not re.search(r"FGTS", text, re.IGNORECASE):
+        if not re.search(self.field_pattern_map["valor_do_fgts"], text, re.IGNORECASE):
             return None
 
         for line in text.splitlines():
@@ -766,8 +802,7 @@ class LaborClaimCalculationExtractor:
 
         return None
 
-    @staticmethod
-    def _extract_exact_fgts_line_value(text: str) -> Decimal | None:
+    def _extract_exact_fgts_line_value(self, text: str) -> Decimal | None:
         """
         Extrai o valor de linhas cujo label seja exatamente 'FGTS'.
 
@@ -796,65 +831,16 @@ class LaborClaimCalculationExtractor:
                 MONEY_RE, " ", line, flags=re.IGNORECASE
             ).strip()
 
-            if not re.fullmatch(r"FGTS", label_without_values, flags=re.IGNORECASE):
+            if not re.fullmatch(
+                self.field_pattern_map["valor_do_fgts"],
+                label_without_values,
+                flags=re.IGNORECASE,
+            ):
                 continue
 
             return to_decimal(money_matches[0].group(0))
 
         return None
-
-    def _extract_fields_from_text(
-        self,
-        text: str,
-        labor_claim_state: LaborClaimState,
-        matched_fields: list[FieldName],
-    ) -> LaborClaimState:
-        """
-        Tenta extrair os campos de interesse diretamente do texto normalizado da página.
-
-        :param text: Texto normalizado da página.
-        :param labor_claim_state: Estado atual de informações extraídas.
-        :param matched_fields: Campos pendentes cujos labels aparecem na página.
-        :return: Estado atualizado com os campos extraídos do texto.
-        """
-        for field_name in list(matched_fields):
-            # Só tenta campos pendentes; IRRF com 0 pode ser refinado em páginas seguintes.
-            if labor_claim_state.has(field_name) and not self._is_soft_value_for_irrf(
-                field_name, getattr(labor_claim_state, field_name)
-            ):
-                continue
-
-            extracted = self._extract_field_value_from_text(text, field_name)
-
-            if extracted is not None:
-                labor_claim_state.set(field_name, extracted)
-                matched_fields.remove(field_name)
-
-        return labor_claim_state
-
-    def _extract_field_value_from_text(
-        self, text: str, field_name: FieldName
-    ) -> Decimal | None:
-        """
-        Extrai o valor de um campo diretamente do texto normalizado da página.
-        :param text: Texto normalizado da página.
-        :param field_name: Nome do campo desejado.
-        :return: Valor extraído como Decimal, ou None.
-        """
-        if special_extractor := self.special_field_extractors.get(field_name):
-            # Encaminha para extratores especializados quando há regra dedicada para o campo.
-            return special_extractor(text)
-
-        field_pattern = self.field_pattern_map.get(field_name)
-        if not field_pattern:
-            return None
-
-        extracted_value = self._extract_money_on_same_line_as_label(text, field_pattern)
-
-        if extracted_value is not None and field_name == "valor_de_irrf":
-            return abs(extracted_value)
-
-        return extracted_value
 
     @staticmethod
     def _extract_money_on_same_line_as_label(
