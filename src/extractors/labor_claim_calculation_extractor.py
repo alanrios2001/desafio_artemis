@@ -5,7 +5,6 @@ from dataclasses import dataclass
 from decimal import Decimal
 from pathlib import Path
 from typing import Callable, Literal, TypeAlias
-
 from pymupdf import Document, Page
 
 from utils.cast_utils import to_decimal
