@@ -192,6 +192,11 @@ class LaborClaimCalculationExtractor:
         with fitz.open(pdf_path) as document:
             document = self._reorder_document_pages(document)
             total_pages = len(document)
+            logger.debug(
+                f"[LaborClaimCalculationExtractor][extract] PDF:{pdf_name}\\n\t"
+                f"Documento reordenado para varredura. Total de paginas: {total_pages}. "
+                f"Tamanho do bloco: {self.page_chunk_size}."
+            )
             for chunk_start in range(0, total_pages, self.page_chunk_size):
                 # Processa blocos curtos para limitar custo de leitura/normalização por iteração.
                 chunk_end = min(chunk_start + self.page_chunk_size, total_pages)
@@ -235,6 +240,11 @@ class LaborClaimCalculationExtractor:
         # Melhora eficiência tentando apenas campos pendentes com label + valor monetário próximo.
         pending_patterns, pattern_matches = self._get_pending_patterns_and_matches(
             labor_claim_state, normalized_text
+        )
+        logger.debug(
+            f"[LaborClaimCalculationExtractor][_process_pages_chunk] PDF:{pdf_name}\\n\t"
+            f"Bloco {chunk_start + 1}-{chunk_end}: "
+            f"pendentes={len(pending_patterns)}, labels_com_valor={len(pattern_matches)}."
         )
 
         if not pending_patterns:
@@ -294,6 +304,10 @@ class LaborClaimCalculationExtractor:
             if labor_claim_state.has(field_name) and not self._is_soft_value_for_irrf(
                 field_name, getattr(labor_claim_state, field_name)
             ):
+                logger.debug(
+                    f"[LaborClaimCalculationExtractor][_extract_fields_from_text] "
+                    f"Campo '{field_name}' ja definido e nao revisavel neste bloco."
+                )
                 continue
 
             extracted = self._extract_field_value_from_text(text, field_name)
@@ -301,6 +315,15 @@ class LaborClaimCalculationExtractor:
             if extracted is not None:
                 labor_claim_state.set(field_name, extracted)
                 matched_fields.remove(field_name)
+                logger.debug(
+                    f"[LaborClaimCalculationExtractor][_extract_fields_from_text] "
+                    f"Campo '{field_name}' atualizado com valor {extracted}."
+                )
+            else:
+                logger.debug(
+                    f"[LaborClaimCalculationExtractor][_extract_fields_from_text] "
+                    f"Campo '{field_name}' com label detectado, mas sem valor valido identificado no bloco."
+                )
 
         return labor_claim_state
 
@@ -373,6 +396,12 @@ class LaborClaimCalculationExtractor:
             for field, pattern in pending_patterns
             if self._has_money_near_label(text, pattern, self.label_money_window)
         ]
+        if pending_patterns:
+            logger.debug(
+                "[LaborClaimCalculationExtractor][_get_pending_patterns_and_matches] "
+                f"Campos pendentes: {[field for field, _ in pending_patterns]}; "
+                f"matches no bloco: {matched_fields}."
+            )
         return pending_patterns, matched_fields
 
     def _extract_honorarios_demonstrativo_total(self, text: str) -> Decimal | None:
@@ -390,6 +419,10 @@ class LaborClaimCalculationExtractor:
         blocks = self._extract_honorarios_due_blocks(text)
         if not blocks:
             # Se não há demonstrativo estruturado, cai para heurísticas de layouts resumidos.
+            logger.debug(
+                "[LaborClaimCalculationExtractor][_extract_honorarios_demonstrativo_total] "
+                "Demonstrativo de honorarios nao encontrado; aplicando fallback de layout resumido."
+            )
             return self._extract_honorarios_sem_demonstrativo_total(text)
 
         total = Decimal("0")
@@ -411,8 +444,16 @@ class LaborClaimCalculationExtractor:
                 found_value = True
 
         if found_value:
+            logger.debug(
+                "[LaborClaimCalculationExtractor][_extract_honorarios_demonstrativo_total] "
+                f"Honorarios extraidos via demonstrativo. Total: {total}."
+            )
             return total
 
+        logger.debug(
+            "[LaborClaimCalculationExtractor][_extract_honorarios_demonstrativo_total] "
+            "Blocos de demonstrativo encontrados sem valor monetario alvo; aplicando fallback."
+        )
         return self._extract_honorarios_sem_demonstrativo_total(text)
 
     def _extract_honorarios_sem_demonstrativo_total(self, text: str) -> Decimal | None:
@@ -526,9 +567,17 @@ class LaborClaimCalculationExtractor:
         )
         if direct_match is not None:
             # Normaliza sinal para retornar contribuição sempre positiva.
+            logger.debug(
+                "[LaborClaimCalculationExtractor][_extract_contribuicao_social_value] "
+                f"Contribuicao social obtida por label direto: {abs(direct_match)}."
+            )
             return abs(direct_match)
 
         # Quando não há total explícito, compõe a contribuição pela soma das parcelas.
+        logger.debug(
+            "[LaborClaimCalculationExtractor][_extract_contribuicao_social_value] "
+            "Label direto indisponivel; tentando composicao INSS reclamante + reclamada."
+        )
         return self._extract_inss_reclamante_reclamada_sum(text)
 
     def _extract_inss_reclamante_reclamada_sum(self, text: str) -> Decimal | None:
@@ -637,6 +686,10 @@ class LaborClaimCalculationExtractor:
         """
         if (exact_fgts_value := self._extract_exact_fgts_line_value(text)) is not None:
             # Melhor caso: label exato "FGTS" evita confusão com linhas intermediárias.
+            logger.debug(
+                "[LaborClaimCalculationExtractor][_extract_fgts_field_value] "
+                f"FGTS extraido por label exato: {exact_fgts_value}."
+            )
             return exact_fgts_value
 
         if (
@@ -644,9 +697,17 @@ class LaborClaimCalculationExtractor:
                 text
             )
         ) is not None:
+            logger.debug(
+                "[LaborClaimCalculationExtractor][_extract_fgts_field_value] "
+                "FGTS extraido por sequencia 'TOTAL DEVIDO AO AUTOR'."
+            )
             return total_devido_ao_autor_fgts
 
         # Último fallback para demonstrativos consolidados (Anexo IX).
+        logger.debug(
+            "[LaborClaimCalculationExtractor][_extract_fgts_field_value] "
+            "FGTS nao identificado nos criterios primarios; tentando fallback Anexo IX."
+        )
         return self._extract_fgts_from_anexo_ix_total(text)
 
     @staticmethod
@@ -715,6 +776,10 @@ class LaborClaimCalculationExtractor:
                 self._extract_money_on_same_line_as_label(text, label_pattern)
             )
             if value is not None:
+                logger.debug(
+                    "[LaborClaimCalculationExtractor][_extract_irrf_field_value] "
+                    f"IRRF extraido por label de alta confianca '{label_pattern}': {value}."
+                )
                 return value
 
         # Em alguns layouts o único valor confiável está no bloco do demonstrativo.
@@ -722,6 +787,10 @@ class LaborClaimCalculationExtractor:
             self._extract_irrf_demonstrativo_total_devido(text)
         )
         if demonstrativo_total is not None:
+            logger.debug(
+                "[LaborClaimCalculationExtractor][_extract_irrf_field_value] "
+                f"IRRF extraido do demonstrativo de imposto de renda: {demonstrativo_total}."
+            )
             return demonstrativo_total
 
         fallback_same_line_patterns = (
@@ -734,8 +803,16 @@ class LaborClaimCalculationExtractor:
                 self._extract_money_on_same_line_as_label(text, label_pattern)
             )
             if value is not None:
+                logger.debug(
+                    "[LaborClaimCalculationExtractor][_extract_irrf_field_value] "
+                    f"IRRF extraido por label fallback '{label_pattern}': {value}."
+                )
                 return value
 
+        logger.debug(
+            "[LaborClaimCalculationExtractor][_extract_irrf_field_value] "
+            "IRRF nao identificado neste bloco de texto."
+        )
         return None
 
     def _extract_irrf_demonstrativo_total_devido(self, text: str) -> Decimal | None:
