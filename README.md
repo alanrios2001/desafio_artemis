@@ -46,10 +46,10 @@ poetry install
 
 ```bash
 # Ativar o ambiente virtual do Poetry
-poetry shell
+poetry env activate
 
 # Executar o script principal
-poetry run python src/main.py
+poetry run python -m src.main
 ```
 
 ## Tecnologias e soluções adotadas
